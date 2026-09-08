@@ -1,0 +1,10 @@
+---
+description: Never hide chats or switch workspace without an explicit user request
+alwaysApply: true
+---
+
+# Do not hide chats or leave this project
+
+- Never hide, archive, rename, or move the current chat unless the user explicitly asks.
+- Never call `move_agent_to_root`, `move_agent_to_cloned_root`, or `create_project` unless the user explicitly asks. Switching the workspace root hides the current chat from the user.
+- Stay in `C:\Users\Эля\runway-at-sea` unless the user explicitly asks to work in a different folder.

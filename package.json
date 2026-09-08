@@ -1,0 +1,9 @@
+{
+  "name": "runway-at-sea",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser prototype: predetermined ship-landing round visualized as a flight, with virtual chips only.",
+  "scripts": {
+    "start": "npx --yes serve . -p 4173"
+  }
+}

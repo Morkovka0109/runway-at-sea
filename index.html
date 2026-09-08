@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Runway at Sea</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@600;700&family=Sora:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./css/styles.css?v=dock3" />
+  </head>
+  <body>
+    <div class="app" data-state="idle">
+      <div class="app-atmosphere" aria-hidden="true"></div>
+
+      <section class="stage">
+        <canvas id="viewport" aria-label="Игровое поле: заход на палубу"></canvas>
+        <div class="stage-frame" aria-hidden="true"></div>
+        <div class="stage-vignette" aria-hidden="true"></div>
+        <p class="brand-mark">Runway at Sea</p>
+
+        <div id="result-banner" class="result-card" hidden>
+          <p id="result-kicker" class="result-kicker">SUCCESS</p>
+          <p id="result-main" class="result-main"></p>
+          <p id="result-sub" class="result-sub"></p>
+        </div>
+      </section>
+
+      <footer class="dock">
+        <div class="hud-board">
+          <header class="hud-top">
+            <div class="top-chip top-chip-balance">
+              <span>Баланс</span>
+              <strong id="balance-value">1000 VC</strong>
+            </div>
+            <div class="top-chip top-chip-round">
+              <span>Раунд</span>
+              <strong id="round-number">1</strong>
+            </div>
+            <div id="state-chip" class="state-chip is-ready">
+              <i class="state-dot" aria-hidden="true"></i>
+              <strong id="round-status">Готов</strong>
+            </div>
+          </header>
+
+          <div class="hud-mid">
+            <div class="stat stat-multiplier">
+              <span>Коэффициент</span>
+              <strong id="stat-multiplier">×1.00</strong>
+            </div>
+            <div class="stat">
+              <span>Высота</span>
+              <strong id="stat-altitude">0 м</strong>
+            </div>
+            <div class="stat">
+              <span>Расстояние</span>
+              <strong id="stat-distance">0 м</strong>
+            </div>
+            <div class="stat">
+              <span>Скорость</span>
+              <strong id="stat-speed">0 уз</strong>
+            </div>
+          </div>
+        </div>
+
+        <aside class="recent-panel">
+          <div class="recent-head">
+            <h2>Последние раунды</h2>
+          </div>
+          <div id="history-list" class="recent-row"></div>
+          <p id="history-empty" class="recent-empty">Пока нет результатов</p>
+        </aside>
+
+        <section class="controls">
+          <div class="bet-block">
+            <div class="bet-row">
+              <button type="button" id="bet-minus" class="icon-btn" aria-label="Уменьшить ставку">−</button>
+              <label class="bet-field">
+                <span class="bet-label">Ставка</span>
+                <span class="bet-value-row">
+                  <input
+                    id="bet-input"
+                    type="number"
+                    min="10"
+                    max="200"
+                    step="10"
+                    value="20"
+                    inputmode="numeric"
+                  />
+                  <em>VC</em>
+                </span>
+              </label>
+              <button type="button" id="bet-plus" class="icon-btn" aria-label="Увеличить ставку">+</button>
+            </div>
+            <div id="bet-presets" class="presets">
+              <button type="button" data-bet="10">10</button>
+              <button type="button" data-bet="20">20</button>
+              <button type="button" data-bet="50">50</button>
+              <button type="button" data-bet="100">100</button>
+              <button type="button" data-bet="200">200</button>
+            </div>
+          </div>
+
+          <button type="button" id="play-button" class="play-button">START</button>
+
+          <div class="tools">
+            <button type="button" id="sound-toggle">Звук</button>
+            <label class="speed-label">
+              Темп
+              <select id="speed-select">
+                <option value="1">1×</option>
+                <option value="1.5">1.5×</option>
+                <option value="2">2×</option>
+                <option value="3">3×</option>
+              </select>
+            </label>
+            <button type="button" id="reset-wallet">Сброс</button>
+          </div>
+        </section>
+      </footer>
+    </div>
+    <script type="module" src="./js/main.js?v=one-ship"></script>
+  </body>
+</html>
