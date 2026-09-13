@@ -4,16 +4,16 @@
   "failures": [],
   "gameRounds": {
     "totalRounds": 1000,
-    "successfulRounds": 355,
-    "failedRounds": 645,
-    "actualSuccessRate": 0.355,
+    "successfulRounds": 378,
+    "failedRounds": 622,
+    "actualSuccessRate": 0.378,
     "configuredSuccessRate": 0.35
   },
   "generator": {
     "totalRounds": 10000,
-    "successfulRounds": 3581,
-    "failedRounds": 6419,
-    "actualSuccessRate": 0.3581,
+    "successfulRounds": 3468,
+    "failedRounds": 6532,
+    "actualSuccessRate": 0.3468,
     "configuredSuccessRate": 0.35
   },
   "timers": {

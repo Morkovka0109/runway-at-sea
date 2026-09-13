@@ -259,12 +259,12 @@ function testUnitPhysics(config) {
   ok(Math.abs(launchedY - holdAlt) < 48, 'launch punch reaches hold altitude', launchedY);
   ok(Math.abs(launchedY - 80) > 80, 'launch punch does not follow the low path', launchedY);
   while (t < 2.2) {
-    hold.follow({ phase: 'CRUISE', distance: 48 + t * 220, altitude: 320, pitch: -6 }, dt, 'flight');
+    hold.follow({ phase: 'CRUISE', distance: 48 + t * 220, altitude: 90, pitch: -6 }, dt, 'flight');
     t += dt;
   }
   ok(Math.abs(hold.body.vx - launchedVx) < 8, 'speed holds without numbers or bombs', `${launchedVx} → ${hold.body.vx}`);
   ok(Math.abs(hold.body.y - launchedY) < 28, 'altitude holds without numbers or bombs', `${launchedY} → ${hold.body.y}`);
-  ok(Math.abs(hold.body.y - 320) > 40, 'altitude does not follow the high guide path', hold.body.y);
+  ok(Math.abs(hold.body.y - 90) > 40, 'altitude does not follow the high guide path', hold.body.y);
 }
 
 async function main() {
@@ -290,6 +290,10 @@ async function main() {
       ok(type === 'SUCCESS' || type === 'FAIL', `${tag} binary result`);
       if (type === 'SUCCESS') {
         ok(sample.ticks.some((tick) => tick.phase === 'LANDING' || tick.landed), `${tag} landing visualized`);
+        ok(
+          sample.ticks.some((tick) => tick.landed || (tick.phase === 'LANDING' && tick.altitude <= 38 && tick.distance >= 1260 && tick.distance <= 1520)),
+          `${tag} SUCCESS reaches the deck`,
+        );
         ok(!sample.ticks.some((tick) => tick.phase === 'CRASH' && tick.landingStage === 'IMPACT'), `${tag} SUCCESS not crashed by physics`);
         stats.success += 1;
       } else {

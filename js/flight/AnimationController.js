@@ -21,7 +21,8 @@ export class AnimationController {
     this.sample = null;
     this._homeRect = null;
     this._shipRects = {};
-    this.particles = new ParticleField(240);
+    this.particles = new ParticleField(420);
+    this._wrecked = false;
     this.numberField = null;
     this.rocketField = null;
     this.clouds = this._makeClouds();
@@ -54,6 +55,7 @@ export class AnimationController {
     this.rocketField = null;
     this._plane = null;
     this._coefPops = [];
+    this._wrecked = false;
   }
 
   prepareRound(numberField, rocketField) {
@@ -61,6 +63,7 @@ export class AnimationController {
     this.numberField = numberField ?? null;
     this.rocketField = rocketField ?? null;
     this._coefPops = [];
+    this._wrecked = false;
   }
 
   returnToIdle(sample) {
@@ -69,6 +72,7 @@ export class AnimationController {
     this.rocketField = null;
     this._plane = null;
     this._coefPops = [];
+    this._wrecked = false;
     this.sample = sample;
   }
 
@@ -157,9 +161,11 @@ export class AnimationController {
       this.camera.impulse(0.72);
     }
     if (sample?.effects?.splashPulse) {
+      this._wrecked = true;
       this._spawnSplash(sample);
-      this._spawnSmoke(sample, 18);
-      this.camera.impulse(0.9);
+      this._spawnWaterBurst(sample);
+      this._spawnSmoke(sample, 22);
+      this.camera.impulse(1.15);
     }
   }
 
@@ -188,9 +194,9 @@ export class AnimationController {
     this._plane = this._planeLayout(w, h);
     this._drawShadows(w, h);
     this._drawReflection(w, h);
-    this._drawParticles(w, h, ['trail', 'smoke']);
+    this._drawParticles(w, h, ['trail', 'smoke', 'fire']);
     this._drawAircraft(w, h);
-    this._drawParticles(w, h, ['dust', 'spark', 'splash', 'flash', 'foam']);
+    this._drawParticles(w, h, ['dust', 'spark', 'splash', 'flash', 'foam', 'wreck', 'spray']);
   }
 
   _horizonY(h) {
@@ -273,8 +279,44 @@ export class AnimationController {
       });
     }
     const crashing = sample.phase === 'CRASH' || sample.effects?.smoke;
-    if (crashing && Math.random() < 0.5) {
+    if (crashing && Math.random() < 0.55) {
       this._spawnSmoke(sample, 1);
+    }
+    if (crashing && !this._wrecked && sample.altitude < 34 && sample.altitude > 2 && Math.random() < 0.7) {
+      this.particles.spawn({
+        kind: 'spray',
+        distance: sample.distance + (Math.random() - 0.5) * 16,
+        altitude: 1 + Math.random() * 4,
+        vx: (Math.random() - 0.5) * 36,
+        vy: 14 + Math.random() * 28,
+        ay: -70,
+        ttl: 0.35 + Math.random() * 0.2,
+        size: 3 + Math.random() * 4,
+      });
+    }
+    if (this._wrecked && Math.random() < 0.8) {
+      this.particles.spawn({
+        kind: 'fire',
+        distance: sample.distance + (Math.random() - 0.5) * 14,
+        altitude: 2 + Math.random() * 8,
+        vx: (Math.random() - 0.5) * 18,
+        vy: 10 + Math.random() * 18,
+        ay: 6,
+        ttl: 0.45 + Math.random() * 0.3,
+        size: 5 + Math.random() * 7,
+        wind: 0.35,
+      });
+      this.particles.spawn({
+        kind: 'foam',
+        distance: sample.distance + (Math.random() - 0.5) * 22,
+        altitude: 1,
+        vx: (Math.random() - 0.5) * 16,
+        vy: 2,
+        ay: -8,
+        ttl: 0.7,
+        size: 8 + Math.random() * 8,
+        drag: 0.94,
+      });
     }
   }
 
@@ -748,7 +790,7 @@ export class AnimationController {
 
   _drawShadows(w, h) {
     const plane = this._plane;
-    if (!plane) return;
+    if (!plane || this._wrecked) return;
     const ctx = this.ctx;
     const alt = this.sample?.altitude ?? 0;
     const spread = 1 + Math.min(2.2, alt / 90);
@@ -763,7 +805,7 @@ export class AnimationController {
 
   _drawReflection(w, h) {
     const plane = this._plane;
-    if (!plane || plane.idle) return;
+    if (!plane || plane.idle || this._wrecked) return;
     const alt = this.sample?.altitude ?? 0;
     if (alt > 120) return;
     const ctx = this.ctx;
@@ -782,7 +824,7 @@ export class AnimationController {
 
   _drawAircraft() {
     const plane = this._plane;
-    if (!plane) return;
+    if (!plane || this._wrecked) return;
     const ctx = this.ctx;
     ctx.save();
     ctx.translate(plane.x, plane.y);
@@ -856,42 +898,104 @@ export class AnimationController {
   _spawnSplash(sample) {
     const d = sample.distance;
     const a = Math.max(1, sample.altitude);
-    for (let i = 0; i < 10; i += 1) {
-      this.particles.spawn({
-        kind: 'splash',
-        distance: d + (Math.random() - 0.5) * 18,
-        altitude: a + Math.random() * 6,
-        vx: (Math.random() - 0.5) * 70,
-        vy: 28 + Math.random() * 46,
-        ay: -92,
-        ttl: 0.7 + Math.random() * 0.35,
-        size: 5 + Math.random() * 8,
-      });
-    }
-    for (let i = 0; i < 16; i += 1) {
+    for (let i = 0; i < 22; i += 1) {
       this.particles.spawn({
         kind: 'splash',
         distance: d + (Math.random() - 0.5) * 28,
-        altitude: a + Math.random() * 4,
-        vx: (Math.random() - 0.5) * 110,
-        vy: 12 + Math.random() * 34,
-        ay: -80,
-        ttl: 0.45 + Math.random() * 0.3,
-        size: 2 + Math.random() * 3.5,
+        altitude: a + Math.random() * 8,
+        vx: (Math.random() - 0.5) * 90,
+        vy: 36 + Math.random() * 70,
+        ay: -96,
+        ttl: 0.85 + Math.random() * 0.45,
+        size: 6 + Math.random() * 11,
       });
     }
-    for (let i = 0; i < 8; i += 1) {
-      const ang = (i / 8) * Math.PI * 2;
+    for (let i = 0; i < 28; i += 1) {
+      this.particles.spawn({
+        kind: 'spray',
+        distance: d + (Math.random() - 0.5) * 36,
+        altitude: a + Math.random() * 5,
+        vx: (Math.random() - 0.5) * 140,
+        vy: 18 + Math.random() * 54,
+        ay: -86,
+        ttl: 0.55 + Math.random() * 0.4,
+        size: 2 + Math.random() * 4,
+      });
+    }
+    for (let i = 0; i < 14; i += 1) {
+      const ang = (i / 14) * Math.PI * 2;
       this.particles.spawn({
         kind: 'foam',
-        distance: d + Math.cos(ang) * 6,
+        distance: d + Math.cos(ang) * 8,
         altitude: 1 + Math.random() * 3,
-        vx: Math.cos(ang) * (18 + Math.random() * 22),
-        vy: 4 + Math.random() * 8,
-        ay: -18,
-        ttl: 0.85 + Math.random() * 0.35,
-        size: 7 + Math.random() * 6,
-        drag: 0.94,
+        vx: Math.cos(ang) * (22 + Math.random() * 28),
+        vy: 5 + Math.random() * 10,
+        ay: -16,
+        ttl: 1.15 + Math.random() * 0.45,
+        size: 9 + Math.random() * 8,
+        drag: 0.93,
+      });
+    }
+  }
+
+  _spawnWaterBurst(sample) {
+    const d = sample.distance;
+    this.particles.spawn({
+      kind: 'flash',
+      distance: d,
+      altitude: 6,
+      vx: 0,
+      vy: 10,
+      ttl: 0.42,
+      size: 34,
+    });
+    this.particles.spawn({
+      kind: 'flash',
+      distance: d,
+      altitude: 10,
+      vx: 0,
+      vy: 4,
+      ttl: 0.28,
+      size: 22,
+    });
+    for (let i = 0; i < 16; i += 1) {
+      this.particles.spawn({
+        kind: 'fire',
+        distance: d + (Math.random() - 0.5) * 16,
+        altitude: 3 + Math.random() * 10,
+        vx: (Math.random() - 0.5) * 50,
+        vy: 18 + Math.random() * 36,
+        ay: -24,
+        ttl: 0.7 + Math.random() * 0.4,
+        size: 6 + Math.random() * 9,
+        wind: 0.2,
+      });
+    }
+    for (let i = 0; i < 14; i += 1) {
+      this.particles.spawn({
+        kind: 'wreck',
+        distance: d + (Math.random() - 0.5) * 10,
+        altitude: 4 + Math.random() * 8,
+        vx: (Math.random() - 0.5) * 70,
+        vy: 16 + Math.random() * 42,
+        ay: -70,
+        ttl: 1.4 + Math.random() * 0.6,
+        size: 4 + Math.random() * 7,
+        spin: (Math.random() - 0.5) * 8,
+        drag: 0.97,
+      });
+    }
+    for (let i = 0; i < 10; i += 1) {
+      this.particles.spawn({
+        kind: 'spark',
+        distance: d + (Math.random() - 0.5) * 12,
+        altitude: 5 + Math.random() * 8,
+        vx: (Math.random() - 0.5) * 80,
+        vy: 20 + Math.random() * 40,
+        ay: -36,
+        ttl: 0.55,
+        size: 2 + Math.random() * 2.4,
+        wind: 0.08,
       });
     }
   }
@@ -936,14 +1040,32 @@ export class AnimationController {
         ctx.arc(proj.x, proj.y, p.size * this.dpr, 0, Math.PI * 2);
         ctx.fill();
       } else if (p.kind === 'flash') {
-        ctx.fillStyle = `rgba(255, 228, 150, ${0.45 * alpha})`;
+        ctx.fillStyle = `rgba(255, 210, 120, ${0.55 * alpha})`;
         ctx.beginPath();
-        ctx.arc(proj.x, proj.y, p.size * proj.scale * this.dpr * (1.2 - alpha * 0.4), 0, Math.PI * 2);
+        ctx.arc(proj.x, proj.y, p.size * proj.scale * this.dpr * (1.35 - alpha * 0.35), 0, Math.PI * 2);
         ctx.fill();
-      } else if (p.kind === 'splash') {
-        ctx.fillStyle = `rgba(198, 236, 255, ${0.55 * alpha})`;
+        ctx.fillStyle = `rgba(255, 250, 230, ${0.35 * alpha})`;
         ctx.beginPath();
-        ctx.ellipse(proj.x, proj.y, p.size * this.dpr, p.size * 0.7 * this.dpr, 0, 0, Math.PI * 2);
+        ctx.arc(proj.x, proj.y, p.size * proj.scale * this.dpr * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === 'fire') {
+        ctx.fillStyle = `rgba(255, ${90 + Math.round(90 * alpha)}, 32, ${0.62 * alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(proj.x, proj.y, p.size * 0.7 * this.dpr, p.size * this.dpr, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === 'wreck') {
+        ctx.save();
+        ctx.translate(proj.x, proj.y);
+        ctx.rotate((p.spin ?? 2) * (1 - alpha));
+        ctx.fillStyle = `rgba(210, 28, 24, ${0.88 * alpha})`;
+        ctx.fillRect(-p.size * this.dpr, -p.size * 0.32 * this.dpr, p.size * 2.1 * this.dpr, p.size * 0.64 * this.dpr);
+        ctx.fillStyle = `rgba(80, 16, 14, ${0.45 * alpha})`;
+        ctx.fillRect(-p.size * 0.4 * this.dpr, -p.size * 0.18 * this.dpr, p.size * this.dpr, p.size * 0.22 * this.dpr);
+        ctx.restore();
+      } else if (p.kind === 'splash' || p.kind === 'spray') {
+        ctx.fillStyle = `rgba(198, 236, 255, ${0.58 * alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(proj.x, proj.y, p.size * this.dpr, p.size * (p.kind === 'spray' ? 1.15 : 0.7) * this.dpr, 0, 0, Math.PI * 2);
         ctx.fill();
       } else if (p.kind === 'foam') {
         ctx.fillStyle = `rgba(230, 246, 255, ${0.35 * alpha})`;

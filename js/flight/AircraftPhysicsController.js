@@ -134,7 +134,9 @@ export class AircraftPhysicsController {
     if (mode === 'flight' && this._isLaunch(guide)) {
       this._launchOnce();
     }
-    if (mode === 'landing') this._armLandingTargets(guide);
+    if (mode === 'landing' || (mode === 'flight' && this._nearLandingZone())) {
+      this._armLandingTargets(guide);
+    }
     if (mode === 'crash') this._armCrashTargets(guide);
     this._refreshFlightState();
 
@@ -225,6 +227,16 @@ export class AircraftPhysicsController {
     this._flightState = 'hold';
   }
 
+  _zoneStart() {
+    const world = this.config.flight.world ?? {};
+    const zone = this.config.roundResult?.landingZone;
+    return zone?.start ?? world.shipDistance ?? 1280;
+  }
+
+  _nearLandingZone() {
+    return this.body.x >= this._zoneStart() - 220;
+  }
+
   _isOverDeck(guide = {}) {
     if (guide.overDeck === true) return true;
     const world = this.config.flight.world ?? {};
@@ -236,24 +248,22 @@ export class AircraftPhysicsController {
 
   _armLandingTargets(guide) {
     const deck = this.config.flight.world?.deckAltitude ?? 26;
-    if (guide?.landed || guide?.landingStage === 'STOP' || guide?.landingStage === 'SETTLE') {
+    const settled = guide?.landed || guide?.landingStage === 'STOP' || guide?.landingStage === 'SETTLE';
+    const over = this._isOverDeck(guide);
+    this._flightState = 'descent';
+    if (settled && over) {
       this._targetY = deck;
       this._targetVx = 0;
-      this._flightState = 'descent';
       return;
     }
-    if (!(this._targetVx > 0)) {
-      this._targetVx = Math.max(this.spec.minHoldSpeed ?? 18, this.body.vx);
-    }
-    const world = this.config.flight.world ?? {};
-    const zone = this.config.roundResult?.landingZone;
-    const start = zone?.start ?? world.shipDistance ?? 1280;
-    const approaching = this.body.x >= start - 180;
-    if (approaching || this._isOverDeck(guide)) {
-      this._targetY = deck;
-      this._flightState = 'descent';
-      const brake = this._isOverDeck(guide) ? 42 : 88;
-      this._targetVx = Math.min(Math.max(this.body.vx, this.spec.minHoldSpeed ?? 18), brake);
+    this._targetY = over ? deck : deck + 16;
+    const high = Math.max(0, this.body.y - deck);
+    const floor = this.spec.minHoldSpeed ?? 18;
+    if (over) {
+      const brake = high > 24 ? 20 : 28;
+      this._targetVx = Math.min(Math.max(this.body.vx, floor), brake);
+    } else {
+      this._targetVx = 100;
     }
   }
 
@@ -327,7 +337,12 @@ export class AircraftPhysicsController {
     if (this._flightState === 'falling') {
       desiredVy = Math.min(this.body.vy, -10) - (spec.crashGravity ?? 140) * dt;
     } else if (this._flightState === 'descent') {
-      const sink = clamp(-err * 0.32, 10, mode === 'landing' ? 38 : 28);
+      const landing = mode === 'landing' || (mode === 'flight' && this._nearLandingZone());
+      const remaining = -err;
+      const flare = landing && remaining < 20;
+      const cap = landing ? (flare ? 26 : 110) : 28;
+      const minSink = landing ? (flare ? 8 : 82) : 10;
+      const sink = clamp(remaining * (landing ? 0.5 : 0.32), minSink, cap);
       desiredVy = err >= 0 ? clamp(err * 1.6, 0, 10) : -sink;
     } else {
       desiredVy = clamp(err * 3.2, -26, 28);
@@ -387,13 +402,18 @@ export class AircraftPhysicsController {
     this.body.x = clamp(Math.max(this.prev.x, this.body.x), minDist, maxDist);
     this.body.vx = Math.max(0, this.body.vx);
     if (mode === 'landing' && (guide.landed || guide.landingStage === 'STOP')) {
-      this.body.y = clamp(this.body.y, world.deckAltitude ?? 26, maxAlt);
-      if (guide.landingStage === 'STOP') {
-        this.body.vx = 0;
-        this.body.vy = 0;
-        this.body.omega = 0;
-        this.body.rotation = 0;
-        this._targetVx = 0;
+      const deckAlt = world.deckAltitude ?? 26;
+      if (this._isOverDeck(guide) || guide.landed) {
+        this.body.y = clamp(this.body.y, deckAlt, maxAlt);
+        if (guide.landingStage === 'STOP' && (guide.landed || this._isOverDeck(guide))) {
+          this.body.vx = 0;
+          this.body.vy = 0;
+          this.body.omega = 0;
+          this.body.rotation = 0;
+          this._targetVx = 0;
+        }
+      } else {
+        this.body.y = clamp(this.body.y, deckAlt + 4, maxAlt);
       }
     } else if (mode === 'crash' || this._flightState === 'falling') {
       this.body.y = clamp(this.body.y, water - 12, maxAlt);

@@ -283,6 +283,10 @@ function assertRound(sample, index) {
     ok(!visited.has(GameState.CRASH), `${tag} SUCCESS never CRASH`);
     const landed = sample.ticks.some((tick) => tick.phase === 'LANDING' || tick.landed);
     ok(landed, `${tag} SUCCESS has landing pose`);
+    ok(
+      sample.ticks.some((tick) => tick.landed || (tick.phase === 'LANDING' && tick.altitude <= 38 && tick.distance >= 1260 && tick.distance <= 1520)),
+      `${tag} SUCCESS reaches the deck`,
+    );
     ok(sample.creditTrace.length === 1, `${tag} win credited once`, sample.creditTrace.length);
   } else {
     ok(visited.has(GameState.CRASH), `${tag} FAIL ends via CRASH`);

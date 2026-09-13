@@ -108,8 +108,11 @@ export class AudioManager {
   playCrash() {
     if (this._crashed) return;
     this._crashed = true;
-    this._noiseBurst(0.42, 0.07, 700);
-    this._sweep(180, 70, 0.35, 'triangle', 0.09);
+    this._noiseBurst(0.55, 0.1, 520);
+    this._noiseBurst(0.28, 0.06, 1400);
+    this._sweep(160, 42, 0.42, 'triangle', 0.11);
+    this._tone(56, 0.28, 0, 'sine', 0.1);
+    this._tone(38, 0.34, 0.04, 'sine', 0.08);
   }
 
   playSuccess() {

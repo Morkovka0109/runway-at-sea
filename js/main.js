@@ -1,4 +1,4 @@
-import { gameConfig } from './config/gameConfig.js?v=higher-up';
+import { gameConfig } from './config/gameConfig.js?v=higher-up2';
 import { EventBus } from './utils/EventBus.js';
 import { SettingsManager } from './core/SettingsManager.js';
 import { RandomResultGenerator } from './core/RandomResultGenerator.js';
@@ -8,11 +8,11 @@ import { Aircraft } from './flight/Aircraft.js';
 import { Ship } from './flight/Ship.js?v=deck-up';
 import { FlightController } from './flight/FlightController.js?v=deck-up';
 import { MultiplierSystem } from './flight/MultiplierSystem.js?v=deck-up';
-import { AnimationController } from './flight/AnimationController.js?v=level-tail';
+import { AnimationController } from './flight/AnimationController.js?v=water-crash';
 import { LandingSequence } from './flight/LandingSequence.js?v=launch-up';
 import { Wallet } from './economy/Wallet.js';
 import { BetManager } from './economy/BetManager.js';
-import { AudioManager } from './audio/AudioManager.js';
+import { AudioManager } from './audio/AudioManager.js?v=water-crash';
 import { GameHistory } from './history/GameHistory.js';
 import { UIManager } from './ui/UIManager.js';
 
