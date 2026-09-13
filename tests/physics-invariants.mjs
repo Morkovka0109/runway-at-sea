@@ -14,7 +14,7 @@ import { Ship } from '../js/flight/Ship.js';
 import { FlightController } from '../js/flight/FlightController.js';
 import { MultiplierSystem } from '../js/flight/MultiplierSystem.js';
 import { LandingSequence } from '../js/flight/LandingSequence.js';
-import { AircraftPhysicsController } from '../js/flight/AircraftPhysicsController.js';
+import { AircraftPhysicsController } from '../js/flight/AircraftPhysicsController.js?v=high-hits6';
 import { Wallet } from '../js/economy/Wallet.js';
 import { BetManager } from '../js/economy/BetManager.js';
 import { GameHistory } from '../js/history/GameHistory.js';
@@ -219,7 +219,7 @@ function testUnitPhysics(config) {
   const heading = physics.body.rotation;
   physics.applyNumberHit();
   ok(physics.body.rotation === heading, 'digit collision does not yank heading');
-  ok(physics.body.vx === 200, 'digit collision keeps forward speed');
+  ok(physics.body.vx > 200, 'digit collision adds forward speed');
 
   physics.applyRocketHit({ damage: { altitude: 14, speed: 0.25 } });
   ok(physics.body.vy < 0, 'rocket adds downward velocity');
@@ -242,6 +242,29 @@ function testUnitPhysics(config) {
   }
   ok(Math.abs(ends[0].x - ends[1].x) < 90, '30fps and 60fps stay close', `${ends[0].x} vs ${ends[1].x}`);
   ok(Math.abs(ends[1].x - ends[2].x) < 70, '60fps and 120fps stay close', `${ends[1].x} vs ${ends[2].x}`);
+
+  const hold = new AircraftPhysicsController(config, new Aircraft());
+  hold.reset({ distance: 48, altitude: 26, pitch: 0 });
+  let t = 0;
+  const dt = 1 / 60;
+  const holdAlt = config.physics?.launchHoldAltitude ?? 158;
+  while (t < 1.1) {
+    hold.follow({ phase: 'TAKEOFF', distance: 48 + t * 220, altitude: 80, pitch: 20 }, dt, 'flight');
+    t += dt;
+  }
+  const launchedVx = hold.body.vx;
+  const launchedY = hold.body.y;
+  const launchVx = config.physics?.launchVx ?? 96;
+  ok(launchedVx <= launchVx + 12, 'launch speed only without pickups', launchedVx);
+  ok(Math.abs(launchedY - holdAlt) < 48, 'launch punch reaches hold altitude', launchedY);
+  ok(Math.abs(launchedY - 80) > 80, 'launch punch does not follow the low path', launchedY);
+  while (t < 2.2) {
+    hold.follow({ phase: 'CRUISE', distance: 48 + t * 220, altitude: 320, pitch: -6 }, dt, 'flight');
+    t += dt;
+  }
+  ok(Math.abs(hold.body.vx - launchedVx) < 8, 'speed holds without numbers or bombs', `${launchedVx} → ${hold.body.vx}`);
+  ok(Math.abs(hold.body.y - launchedY) < 28, 'altitude holds without numbers or bombs', `${launchedY} → ${hold.body.y}`);
+  ok(Math.abs(hold.body.y - 320) > 40, 'altitude does not follow the high guide path', hold.body.y);
 }
 
 async function main() {
@@ -276,7 +299,7 @@ async function main() {
       for (const tick of sample.ticks) {
         ok(Number.isFinite(tick.distance) && Number.isFinite(tick.altitude) && Number.isFinite(tick.speed), `${tag} pose finite`);
         ok(tick.speed >= 0 && tick.speed !== Infinity && tick.speed <= 500, `${tag} speed bounded`);
-        ok(tick.distance >= -1 && tick.distance <= 2500, `${tag} in world X`);
+        ok(tick.distance >= -1 && tick.distance <= 20000, `${tag} in world X`);
         ok(tick.altitude >= -20 && tick.altitude <= 400, `${tag} in world Y`);
         ok(Number.isFinite(tick.vx) && Number.isFinite(tick.vy), `${tag} velocity finite`);
       }

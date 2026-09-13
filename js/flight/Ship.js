@@ -48,6 +48,26 @@ export class Ship {
       x: this.zoneCollider.x,
       y: this.zoneCollider.y,
     });
+    this.waterCollider = new Collider({
+      id: 'water',
+      kind: 'water',
+      shape: 'aabb',
+      x: 50000,
+      y: (world.waterLevel ?? 0) - 10,
+      halfW: 60000,
+      halfH: 12,
+      sensor: true,
+      enabled: true,
+    });
+    this.waterBody = new Body({
+      id: 'water',
+      collider: this.waterCollider,
+      kinematic: true,
+      sensor: true,
+      kind: 'water',
+      x: this.waterCollider.x,
+      y: this.waterCollider.y,
+    });
   }
 
   get deck() {

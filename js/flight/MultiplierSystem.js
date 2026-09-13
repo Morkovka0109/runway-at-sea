@@ -14,6 +14,7 @@ export class MultiplierSystem {
     this.current = config.multiplier.start;
     this.display = config.multiplier.start;
     this.rocketPenalty = 0;
+    this._hitBonus = 0;
     this._hitIds = new Set();
     this._rocketHitIds = new Set();
     this._pulse = 0;
@@ -45,6 +46,7 @@ export class MultiplierSystem {
     this.current = this.config.multiplier.start;
     this.display = this.config.multiplier.start;
     this.rocketPenalty = 0;
+    this._hitBonus = 0;
     this._hitIds = new Set();
     this._rocketHitIds = new Set();
     this._pulse = 0;
@@ -53,8 +55,8 @@ export class MultiplierSystem {
 
   /**
    * Apply a collected path digit to the live coefficient.
-   * Maps 1..10 onto this round's existing [start, peak] band so the
-   * predetermined payout formula is not replaced.
+   * Each digit adds a bonus on top of the current display, capped by this
+   * round's peak so the predetermined payout formula is not replaced.
    */
   onMultiplierNumberHit(number, meta = {}) {
     const spec = this.config.multiplier;
@@ -71,14 +73,19 @@ export class MultiplierSystem {
 
     const start = spec.start;
     const peak = this.profile.peak;
-    const u = (n - min) / (max - min || 1);
-    const mapped = lerp(start, peak, u);
-    this.current = roundTo(Math.max(this.current, mapped), spec.decimals);
+    const unit = pick.multiplierBonus ?? 0.06;
+    const bump = roundTo(n * unit, spec.decimals);
+    const floor = Math.max(this.current, this.display, start);
+    const next = roundTo(Math.min(peak, floor + bump), spec.decimals);
+    const delta = roundTo(Math.max(0, next - floor), spec.decimals);
+    this._hitBonus = roundTo(this._hitBonus + delta, spec.decimals);
+    this.current = next;
     this._pulse = 1;
     return {
       number: n,
       current: this.current,
-      mapped: roundTo(mapped, spec.decimals),
+      mapped: next,
+      delta,
       peak,
     };
   }
@@ -130,10 +137,10 @@ export class MultiplierSystem {
     const phase = pose.phase ?? 'CRUISE';
     const t = clamp(pose.t ?? 0, 0, 1);
     const phaseValue = this._displayAt(t);
-    const landing = phase === 'LANDING' || phase === 'CRASH' || t >= 1;
     const boosted = Math.max(phaseValue, this.current);
     const live = Math.max(spec.start, boosted - this.rocketPenalty);
-    const target = landing ? phaseValue : live;
+    const settleFail = phase === 'CRASH' || (this.profile.result === 'FAIL' && t >= 1);
+    const target = settleFail ? this.profile.value : live;
     const step = dt > 0 ? dt : 0;
     this.display = step > 0 ? damp(this.display, target, this._pulse > 0.2 ? 22 : 11, step) : target;
     this._pulse *= Math.exp(-10 * (step || 0.016));

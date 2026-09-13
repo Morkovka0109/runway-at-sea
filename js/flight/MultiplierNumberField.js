@@ -1,4 +1,4 @@
-import { catmullRom, clamp } from '../utils/easing.js';
+import { clamp } from '../utils/easing.js';
 import { sweptCircleHit } from '../physics/Collider.js';
 import { MultiplierNumber } from './MultiplierNumber.js';
 
@@ -28,108 +28,154 @@ function shuffle(list, rng) {
   return items;
 }
 
-function pathPoint(keys, u) {
-  const t = clamp(u, 0, 1);
-  if (!keys?.length) return { distance: 0, altitude: 0 };
-  if (t <= keys[0].u) return { distance: keys[0].distance, altitude: keys[0].altitude };
-  const last = keys[keys.length - 1];
-  if (t >= last.u) return { distance: last.distance, altitude: last.altitude };
-
-  let i = 0;
-  while (i < keys.length - 2 && keys[i + 1].u < t) i += 1;
-  const a = keys[i];
-  const b = keys[i + 1];
-  const p0 = keys[Math.max(0, i - 1)];
-  const p3 = keys[Math.min(keys.length - 1, i + 2)];
-  const local = (t - a.u) / (b.u - a.u || 1);
-  return {
-    distance: catmullRom(p0.distance, a.distance, b.distance, p3.distance, local),
-    altitude: catmullRom(p0.altitude, a.altitude, b.altitude, p3.altitude, local),
-  };
-}
-
 /**
  * Spawns and collides collectible multiplier digits for one round.
+ * Initial fill covers the flight path; ensureAhead streams more as the plane flies.
  */
 export class MultiplierNumberField {
   constructor(config) {
     this.config = config;
     this.items = [];
     this.roundId = null;
+    this._resetStream();
+  }
+
+  _resetStream() {
+    this._rng = null;
+    this._keys = [];
+    this._next = 0;
+    this._seq = 0;
+    this._bag = [];
+    this._wave = 96;
   }
 
   clear() {
     this.items = [];
     this.roundId = null;
+    this._resetStream();
   }
 
   spawn(roundId, flightPlan) {
     const spec = this.config.numberPickups ?? {};
     const minCount = spec.minCount ?? 20;
     const extra = spec.extraCount ?? 4;
-    const numberMin = spec.numberMin ?? 1;
-    const numberMax = spec.numberMax ?? 10;
-    const radius = spec.numberRadius ?? 15;
     const seed = ((spec.seed ?? 91) + (Number(roundId) || 0) * 9973) >>> 0;
     const rng = mulberry32(seed);
-    const count = minCount + Math.floor(rng() * (extra + 1));
     const keys = flightPlan?.keys ?? [];
+    const last = keys[keys.length - 1];
+    const pathEnd = Math.max((last?.distance ?? 1280) * 0.98, 720);
+    const guaranteed = minCount + Math.floor(rng() * (extra + 1));
 
-    const values = [];
-    for (let i = 0; i < count; i += 1) {
-      values.push(numberMin + (i % (numberMax - numberMin + 1)));
+    this.roundId = roundId;
+    this.items = [];
+    this._rng = rng;
+    this._keys = keys;
+    this._seq = 0;
+    this._bag = [];
+    this._next = (spec.startDistance ?? 56) + range(rng, 4, 36);
+    this._wave = (this.config.flight?.world?.startAltitude ?? 26) + 70;
+    const floor = spec.waveMin ?? 36;
+    const ceil = spec.waveMax ?? 190;
+    const step = spec.waveStep ?? 34;
+    while (this._seq < guaranteed || this._next < pathEnd) {
+      this._wave = clamp(this._wave + range(rng, -step, step), floor, ceil);
+      if (!this._placeOne(this._next, this._wave)) break;
+      this._next += range(rng, spec.gapMin ?? 28, spec.gapMax ?? 86);
     }
-    const shuffled = shuffle(values, rng);
+  }
 
-    const u0 = spec.uStart ?? 0.06;
-    const u1 = spec.uEnd ?? 0.9;
-    const slots = chaoticUs(count, u0, u1, rng);
+  /**
+   * Keep digits in front of the aircraft for as long as the round continues.
+   */
+  ensureAhead(distance, altitude) {
+    if (!this._rng) return;
+    const spec = this.config.numberPickups ?? {};
+    const spawnAhead = spec.spawnAhead ?? 460;
+    const despawnBehind = spec.despawnBehind ?? 240;
+    const maxLive = spec.maxLive ?? 72;
+    const horizon = distance + spawnAhead;
+
+    this.items = this.items.filter((item) => {
+      if (item.gone) return false;
+      if (item.hit) return item.distance > distance - 90;
+      return item.distance > distance - despawnBehind;
+    });
+
+    const floor = spec.waveMin ?? 36;
+    const ceil = spec.waveMax ?? 190;
+    const step = spec.waveStep ?? 34;
+    let guard = 0;
+    while (this._next < horizon && this.items.length < maxLive && guard < 24) {
+      const around = Number.isFinite(altitude) ? altitude : this._wave;
+      this._wave = clamp(around + range(this._rng, -step, step), floor, ceil);
+      if (!this._placeOne(this._next, this._wave)) break;
+      this._next += range(this._rng, spec.gapMin ?? 28, spec.gapMax ?? 86);
+      guard += 1;
+    }
+  }
+
+  _nextNumber() {
+    const spec = this.config.numberPickups ?? {};
+    const numberMin = spec.numberMin ?? 1;
+    const numberMax = spec.numberMax ?? 10;
+    if (!this._bag.length) {
+      const bag = [];
+      for (let n = numberMin; n <= numberMax; n += 1) bag.push(n);
+      this._bag = shuffle(bag, this._rng);
+    }
+    return this._bag.pop();
+  }
+
+  _placeOne(distance, pathAltitude) {
+    const spec = this.config.numberPickups ?? {};
+    const rng = this._rng;
+    const maxLive = spec.maxLive ?? 72;
+    if (!rng || this.items.length >= maxLive) return false;
+
+    const radius = spec.numberRadius ?? 8;
     const altJitter = spec.altitudeJitter ?? 42;
-    const distJitter = spec.distanceJitter ?? 64;
-    const minSep = spec.minSeparation ?? 28;
+    const distJitter = spec.distanceJitter ?? 28;
+    const minSep = spec.minSeparation ?? 36;
     const bands = spec.altitudeBands ?? [-92, -58, -30, -8, 14, 40, 72, 108];
     const latMin = spec.lateralMin ?? 28;
     const latMax = spec.lateralMax ?? 148;
     const water = this.config.flight?.world?.waterLevel ?? 0;
     const maxAlt = this.config.physics?.maxAltitude ?? 360;
 
-    this.roundId = roundId;
-    this.items = [];
-    for (let i = 0; i < count; i += 1) {
-      const point = pathPoint(keys, slots[i]);
-      const band = bands[Math.floor(rng() * bands.length)];
-      let distance = point.distance + range(rng, -distJitter, distJitter);
-      let altitude = point.altitude + band + range(rng, -altJitter, altJitter);
-      const side = rng() < 0.5 ? -1 : 1;
-      let lateral = side * range(rng, latMin, latMax);
-      if (rng() < 0.18) lateral *= range(rng, 0.15, 0.45);
+    let x = distance + range(rng, -distJitter * 0.35, distJitter * 0.35);
+    const band = bands[Math.floor(rng() * bands.length)];
+    let altitude = pathAltitude + band + range(rng, -altJitter, altJitter);
+    const side = rng() < 0.5 ? -1 : 1;
+    let lateral = side * range(rng, latMin, latMax);
+    if (rng() < 0.18) lateral *= range(rng, 0.15, 0.45);
 
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        let bumped = false;
-        for (const prev of this.items) {
-          const dx = distance - prev.distance;
-          const dy = altitude - prev.altitude;
-          if (dx * dx + dy * dy < minSep * minSep) {
-            distance += minSep * range(rng, 0.7, 1.35) * (rng() < 0.5 ? -1 : 1);
-            altitude += minSep * range(rng, 0.35, 0.9) * (rng() < 0.5 ? -1 : 1);
-            bumped = true;
-          }
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      let bumped = false;
+      for (const prev of this.items) {
+        const dx = x - prev.distance;
+        const dy = altitude - prev.altitude;
+        if (dx * dx + dy * dy < minSep * minSep) {
+          x += minSep * range(rng, 0.55, 1.15) * (rng() < 0.5 ? -1 : 1);
+          altitude += minSep * range(rng, 0.3, 0.8) * (rng() < 0.5 ? -1 : 1);
+          bumped = true;
         }
-        if (!bumped) break;
       }
-
-      this.items.push(
-        new MultiplierNumber({
-          id: `mn-${roundId}-${i}`,
-          number: shuffled[i],
-          distance,
-          altitude: clamp(altitude, water + 8, maxAlt),
-          radius,
-          scale: range(rng, 0.78, 1.22),
-          lateral,
-        }),
-      );
+      if (!bumped) break;
     }
+
+    this._seq += 1;
+    this.items.push(
+      new MultiplierNumber({
+        id: `mn-${this.roundId}-${this._seq}`,
+        number: this._nextNumber(),
+        distance: x,
+        altitude: clamp(altitude, water + 8, maxAlt),
+        radius,
+        scale: range(rng, 0.52, 0.7),
+        lateral,
+      }),
+    );
+    return true;
   }
 
   update(dt) {
@@ -162,18 +208,4 @@ export class MultiplierNumberField {
     const far = origin + viewRange + 140;
     return this.items.filter((item) => !item.gone && item.distance >= near && item.distance <= far);
   }
-}
-
-function chaoticUs(count, u0, u1, rng) {
-  const span = u1 - u0;
-  const slots = [];
-  for (let i = 0; i < count; i += 1) {
-    if (slots.length && rng() < 0.2) {
-      const cluster = slots[Math.floor(rng() * slots.length)];
-      slots.push(clamp(cluster + range(rng, -span * 0.035, span * 0.035), u0, u1));
-      continue;
-    }
-    slots.push(range(rng, u0, u1));
-  }
-  return slots;
 }

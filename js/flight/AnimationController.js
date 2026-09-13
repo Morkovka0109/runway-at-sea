@@ -1,7 +1,7 @@
 import { clamp, inverseLerp, lerp } from '../utils/easing.js';
 import { AssetLoader } from '../scene/AssetLoader.js?v=red2';
-import { CameraRig } from '../scene/CameraRig.js';
-import { GameScene } from '../scene/GameScene.js?v=one-ship';
+import { CameraRig } from '../scene/CameraRig.js?v=deck-up';
+import { GameScene } from '../scene/GameScene.js?v=pickup-sea';
 import { ParticleField } from '../scene/ParticleField.js';
 
 /**
@@ -21,7 +21,7 @@ export class AnimationController {
     this.sample = null;
     this._homeRect = null;
     this._shipRects = {};
-    this.particles = new ParticleField(160);
+    this.particles = new ParticleField(240);
     this.numberField = null;
     this.rocketField = null;
     this.clouds = this._makeClouds();
@@ -29,6 +29,7 @@ export class AnimationController {
     this.time = 0;
     this.dpr = 1;
     this._plane = null;
+    this._coefPops = [];
     this.resize();
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(this.canvas);
@@ -52,12 +53,14 @@ export class AnimationController {
     this.numberField = null;
     this.rocketField = null;
     this._plane = null;
+    this._coefPops = [];
   }
 
   prepareRound(numberField, rocketField) {
     this.particles.clear();
     this.numberField = numberField ?? null;
     this.rocketField = rocketField ?? null;
+    this._coefPops = [];
   }
 
   returnToIdle(sample) {
@@ -65,12 +68,23 @@ export class AnimationController {
     this.numberField = null;
     this.rocketField = null;
     this._plane = null;
+    this._coefPops = [];
     this.sample = sample;
   }
 
-  onNumberHit(item) {
+  onNumberHit(item, applied = null) {
     if (!item) return;
     this.camera.impulse(0.2);
+    const delta = applied?.delta;
+    if (Number.isFinite(delta) && delta > 0) {
+      this._coefPops.push({
+        distance: item.distance,
+        altitude: item.altitude + 12,
+        text: `+${delta.toFixed(2)}`,
+        ttl: 0.85,
+        life: 0.85,
+      });
+    }
     for (let i = 0; i < 10; i += 1) {
       this.particles.spawn({
         kind: 'spark',
@@ -97,7 +111,7 @@ export class AnimationController {
 
   onRocketHit(rocket) {
     if (!rocket) return;
-    this.camera.impulse(0.34);
+    this.camera.impulse(0.22);
     for (let i = 0; i < 7; i += 1) {
       this.particles.spawn({
         kind: 'spark',
@@ -151,34 +165,59 @@ export class AnimationController {
 
   render(dt) {
     this.time += dt;
-    this.camera.update(dt, this.sample);
+    const { ctx, canvas } = this;
+    const w = canvas.width;
+    const h = canvas.height;
+    this.camera.update(dt, this.sample, { w, h });
+    this._streamWorld();
     const sec = dt / 1000;
     const wind = this.camera.wind * 22;
     this._updateClouds(sec, wind);
     this._emitAmbient(sec);
     this.particles.update(sec, wind);
-    const { ctx, canvas } = this;
-    const w = canvas.width;
-    const h = canvas.height;
+    this._updateCoefPops(sec);
     ctx.clearRect(0, 0, w, h);
     this._drawBackdrop(w, h);
     this._drawClouds(w, h);
     this._drawHorizon(w, h);
     this._drawWater(w, h);
     this._drawFleet(w, h);
-    this._drawLandingZone(w, h);
     this._drawNumbers(w, h);
+    this._drawCoefPops(w, h);
     this._drawRockets(w, h);
     this._plane = this._planeLayout(w, h);
     this._drawShadows(w, h);
     this._drawReflection(w, h);
     this._drawParticles(w, h, ['trail', 'smoke']);
     this._drawAircraft(w, h);
-    this._drawParticles(w, h, ['dust', 'spark', 'splash', 'flash']);
+    this._drawParticles(w, h, ['dust', 'spark', 'splash', 'flash', 'foam']);
   }
 
   _horizonY(h) {
     return h * this.config.scene.horizonRatio;
+  }
+
+  _ppm(w, h) {
+    const range = Math.max(1, this.config.scene.viewRange ?? 240);
+    return w / range;
+  }
+
+  _streamWorld() {
+    const origin = this.camera.origin ?? 0;
+    const viewRange = this.config.scene.viewRange ?? 240;
+    const distance = this.sample?.distance ?? 0;
+    const altitude = this.sample?.altitude ?? 80;
+    this.scene.ensureAhead(origin, viewRange);
+    this.numberField?.ensureAhead?.(distance, altitude);
+    this.rocketField?.ensureAhead?.(distance, altitude);
+  }
+
+  _worldPx(world, w, h) {
+    return world * this._ppm(w, h);
+  }
+
+  _objectScale() {
+    return this.config.scene.objectScale ?? {};
   }
 
   _makeClouds() {
@@ -255,7 +294,7 @@ export class AnimationController {
 
     const imgHorizon = this.config.scene.imageHorizon;
     const targetHorizon = this.config.scene.horizonRatio;
-    const parallax = -this.camera.origin * 0.012 * this.dpr + this.camera.wind * 4;
+    const parallax = -this.camera.origin * 0.08 * this.dpr + this.camera.wind * 4;
     const scale = Math.max(w / sky.width, (h / sky.height) * 1.08);
     const iw = sky.width * scale;
     const ih = sky.height * scale;
@@ -277,7 +316,8 @@ export class AnimationController {
     const ctx = this.ctx;
     const horizon = this._horizonY(h);
     for (const cloud of this.clouds) {
-      const x = cloud.x * w;
+      const scroll = (this.camera.origin / 1400) * (0.18 + cloud.layer * 0.1);
+      const x = ((((cloud.x - scroll) % 1) + 1) % 1) * w;
       const y = cloud.y * horizon;
       ctx.save();
       ctx.globalAlpha = cloud.alpha;
@@ -355,7 +395,12 @@ export class AnimationController {
     const forceIds = [];
     if (intro > 0.35 && nearHome) forceIds.push('home');
     if ((this.sample?.deckBlend ?? 0) > 0.01 || nearTarget) forceIds.push('target');
-    this.scene.syncVisible(origin, frame.viewRange, { near, far, forceIds, maxVisible: 1 });
+    this.scene.syncVisible(origin, frame.viewRange, {
+      near,
+      far,
+      forceIds,
+      maxVisible: this.config.scene.track?.maxVisible ?? 5,
+    });
     for (const ship of this.scene.shipsBackToFront()) {
       this._drawShip(ship, w, h);
     }
@@ -372,44 +417,76 @@ export class AnimationController {
     for (const item of visible) this._drawNumber(item, w, h);
   }
 
+  _updateCoefPops(sec) {
+    this._coefPops = (this._coefPops ?? []).filter((pop) => {
+      pop.ttl -= sec;
+      pop.altitude += 26 * sec;
+      return pop.ttl > 0;
+    });
+  }
+
+  _drawCoefPops(w, h) {
+    const pops = this._coefPops;
+    if (!pops?.length) return;
+    const ctx = this.ctx;
+    for (const pop of pops) {
+      const proj = this.camera.project(pop.distance, pop.altitude, w, h);
+      const fade = clamp(pop.ttl / (pop.life || 0.85), 0, 1);
+      const size = 13 * this.dpr * (0.85 + (1 - fade) * 0.35);
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `800 ${Math.max(10, size)}px Sora, Arial, sans-serif`;
+      ctx.shadowColor = 'rgba(255, 210, 96, 0.9)';
+      ctx.shadowBlur = size * 0.45;
+      ctx.strokeStyle = 'rgba(28, 16, 6, 0.82)';
+      ctx.lineWidth = Math.max(2, size * 0.12);
+      ctx.strokeText(pop.text, proj.x, proj.y);
+      ctx.fillStyle = '#ffe27a';
+      ctx.fillText(pop.text, proj.x, proj.y);
+      ctx.restore();
+    }
+  }
+
   _drawNumber(item, w, h) {
     const proj = this.camera.project(item.distance, item.altitude, w, h, item.lateral ?? 0);
     const pop = item.pop ?? 0;
     const hitting = item.hit || item.collected;
     const fade = hitting ? clamp(1 - pop, 0, 1) : 1;
     if (fade <= 0.02) return;
-    const swell = hitting ? 1 + Math.min(0.85, pop * 1.4) : 1;
-    const size = Math.min(w, h) * 0.058 * proj.scale * (item.scale ?? 1) * swell;
+    const scaleCfg = this._objectScale();
+    const sprite = this.assets?.plane;
+    const planeLen = scaleCfg.planeWorldLength ?? 48;
+    const aspect = sprite ? sprite.height / sprite.width : 0.42;
+    const planeHeight = planeLen * aspect;
+    const frac = clamp(item.scale ?? 0.6, 0.5, 0.7);
+    const swell = hitting ? 1 + Math.min(0.12, pop * 0.2) : 1;
+    const size = this._worldPx(planeHeight * frac, w, h) * swell;
     const ctx = this.ctx;
     const n = item.number;
     const hot = n >= 8;
     const mid = n >= 4;
+    const fill = hot ? '#ffe27a' : mid ? '#f3c56a' : '#fff4d6';
+    const glow = hot ? 'rgba(255, 210, 96, 0.95)' : 'rgba(232, 196, 120, 0.8)';
     ctx.save();
-    ctx.globalAlpha = (0.82 + 0.18 * (1 - Math.min(1, Math.max(0, proj.t)))) * fade;
-    ctx.shadowColor = hot ? 'rgba(255, 210, 96, 0.85)' : 'rgba(232, 196, 120, 0.55)';
-    ctx.shadowBlur = size * 0.65;
-    ctx.beginPath();
-    ctx.arc(proj.x, proj.y, size, 0, Math.PI * 2);
-    ctx.fillStyle = hot ? '#f6cf6e' : mid ? '#e8b85a' : '#efe3c8';
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.lineWidth = Math.max(1.5, size * 0.08);
-    ctx.strokeStyle = 'rgba(28, 18, 8, 0.72)';
-    ctx.stroke();
-    if (hitting && pop < 0.45) {
-      ctx.globalAlpha = (1 - pop / 0.45) * 0.7;
-      ctx.beginPath();
-      ctx.arc(proj.x, proj.y, size * (1.15 + pop * 1.8), 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(255, 236, 180, 0.95)';
-      ctx.lineWidth = Math.max(2, size * 0.12);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = fade;
-    ctx.fillStyle = '#1a140c';
-    ctx.font = `800 ${Math.max(11, size * 1.05)}px Sora, Arial, sans-serif`;
+    ctx.globalAlpha = (0.88 + 0.12 * (1 - Math.min(1, Math.max(0, proj.t)))) * fade;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(n), proj.x, proj.y + size * 0.04);
+    ctx.font = `800 ${Math.max(8, size)}px Sora, Arial, sans-serif`;
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = size * 0.55;
+    ctx.strokeStyle = 'rgba(28, 16, 6, 0.82)';
+    ctx.lineWidth = Math.max(2.4, size * 0.12);
+    ctx.strokeText(String(n), proj.x, proj.y);
+    ctx.shadowBlur = size * 0.28;
+    ctx.fillStyle = fill;
+    ctx.fillText(String(n), proj.x, proj.y);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.fillText(String(n), proj.x, proj.y - size * 0.06);
     ctx.restore();
   }
 
@@ -429,39 +506,81 @@ export class AnimationController {
     const pop = rocket.pop ?? 0;
     const fade = rocket.hit ? clamp(1 - pop, 0, 1) : 1;
     if (fade <= 0.02) return;
-    const swell = rocket.hit ? 1 + Math.min(1.1, pop * 1.8) : 1;
-    const len = Math.min(w, h) * 0.05 * proj.scale * (rocket.scale ?? 1) * swell;
+    const swell = rocket.hit ? 1 + Math.min(0.18, pop * 0.35) : 1;
+    const planeLen = this._objectScale().planeWorldLength ?? 48;
+    const rocketLen = Math.min(this._objectScale().rocketWorldLength ?? 26, planeLen * 0.58);
+    const len = this._worldPx(rocketLen * clamp(rocket.scale ?? 0.9, 0.72, 0.96), w, h) * swell;
     const ctx = this.ctx;
-    const flicker = 0.65 + 0.35 * Math.abs(Math.sin((this.time * 0.018 + rocket.phase) * 0.08));
+    const flicker = 0.55 + 0.45 * Math.abs(Math.sin((this.time * 0.014 + rocket.phase) * 0.1));
     ctx.save();
     ctx.translate(proj.x, proj.y);
     ctx.rotate(((rocket.angle ?? 0) * Math.PI) / 180);
-    ctx.globalAlpha = (0.84 + 0.16 * (1 - Math.min(1, Math.max(0, proj.t)))) * fade;
+    ctx.globalAlpha = (0.88 + 0.12 * (1 - Math.min(1, Math.max(0, proj.t)))) * fade;
+
     if (!rocket.hit) {
-      ctx.fillStyle = `rgba(255, 170, 70, ${0.55 * flicker})`;
+      ctx.save();
+      ctx.globalAlpha *= 0.55 + 0.45 * flicker;
+      const exhaust = ctx.createLinearGradient(-len * 1.15, 0, -len * 0.42, 0);
+      exhaust.addColorStop(0, 'rgba(80, 170, 255, 0)');
+      exhaust.addColorStop(0.35, 'rgba(80, 190, 255, 0.28)');
+      exhaust.addColorStop(0.7, 'rgba(255, 210, 120, 0.7)');
+      exhaust.addColorStop(1, 'rgba(255, 255, 240, 0.95)');
+      ctx.fillStyle = exhaust;
       ctx.beginPath();
-      ctx.moveTo(-len * 0.55, 0);
-      ctx.lineTo(-len * 0.9, len * 0.12);
-      ctx.lineTo(-len * 0.9, -len * 0.12);
-      ctx.closePath();
+      ctx.moveTo(-len * 0.42, 0);
+      ctx.quadraticCurveTo(-len * 0.78, len * 0.1 * flicker, -len * 1.18, 0);
+      ctx.quadraticCurveTo(-len * 0.78, -len * 0.1 * flicker, -len * 0.42, 0);
       ctx.fill();
+      ctx.restore();
     }
-    ctx.fillStyle = rocket.hit ? `rgba(255, 170, 90, ${fade})` : '#c45b3a';
+
+    ctx.fillStyle = '#1b2734';
     ctx.beginPath();
-    ctx.moveTo(len * 0.55, 0);
-    ctx.lineTo(-len * 0.42, len * 0.2);
-    ctx.lineTo(-len * 0.32, 0);
-    ctx.lineTo(-len * 0.42, -len * 0.2);
+    ctx.moveTo(-len * 0.42, len * 0.16);
+    ctx.lineTo(-len * 0.58, len * 0.3);
+    ctx.lineTo(-len * 0.28, len * 0.08);
     ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = '#d8dee4';
     ctx.beginPath();
-    ctx.ellipse(len * 0.08, 0, len * 0.22, len * 0.1, 0, 0, Math.PI * 2);
+    ctx.moveTo(-len * 0.42, -len * 0.16);
+    ctx.lineTo(-len * 0.58, -len * 0.3);
+    ctx.lineTo(-len * 0.28, -len * 0.08);
+    ctx.closePath();
     ctx.fill();
+
+    const hull = ctx.createLinearGradient(0, -len * 0.14, 0, len * 0.14);
+    hull.addColorStop(0, '#d7e4f2');
+    hull.addColorStop(0.35, '#8ea4bb');
+    hull.addColorStop(0.7, '#3d4d5f');
+    hull.addColorStop(1, '#1a242f');
+    ctx.fillStyle = rocket.hit ? `rgba(255, 176, 96, ${fade})` : hull;
+    ctx.beginPath();
+    ctx.moveTo(len * 0.58, 0);
+    ctx.quadraticCurveTo(len * 0.22, -len * 0.13, -len * 0.38, -len * 0.11);
+    ctx.lineTo(-len * 0.46, 0);
+    ctx.lineTo(-len * 0.38, len * 0.11);
+    ctx.quadraticCurveTo(len * 0.22, len * 0.13, len * 0.58, 0);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
+    ctx.beginPath();
+    ctx.ellipse(len * 0.08, -len * 0.035, len * 0.22, len * 0.028, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#67e0ff';
+    ctx.shadowColor = 'rgba(80, 210, 255, 0.9)';
+    ctx.shadowBlur = len * 0.18;
+    ctx.beginPath();
+    ctx.ellipse(len * 0.18, 0, len * 0.07, len * 0.045, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#0f1720';
+    ctx.fillRect(-len * 0.5, -len * 0.045, len * 0.08, len * 0.09);
+
     if (rocket.hit && pop < 0.5) {
       ctx.globalAlpha = (1 - pop / 0.5) * 0.75;
-      ctx.strokeStyle = 'rgba(255, 210, 130, 0.95)';
-      ctx.lineWidth = Math.max(2, len * 0.1);
+      ctx.strokeStyle = 'rgba(180, 230, 255, 0.95)';
+      ctx.lineWidth = Math.max(2, len * 0.08);
       ctx.beginPath();
       ctx.arc(0, 0, len * (0.7 + pop * 1.6), 0, Math.PI * 2);
       ctx.stroke();
@@ -470,10 +589,10 @@ export class AnimationController {
   }
 
   _shipSize(proj, ship, w, h) {
-    const field = Math.min(w, h * 1.85);
     const introCfg = this.camera.introSettings(w, h);
-    const introBoost = ship.id === 'home' ? lerp(1, introCfg.homeScale ?? 1.18, this.camera.intro ?? 0) : 1;
-    const width = field * 0.4 * proj.scale * (ship.scale ?? 1) * introBoost;
+    const introBoost = ship.id === 'home' ? lerp(1, introCfg.homeScale ?? 1.12, this.camera.intro ?? 0) : 1;
+    const shipLen = this._objectScale().shipWorldLength ?? this.config.flight.world.deckLength ?? 176;
+    const width = this._worldPx(shipLen * (ship.scale ?? 1), w, h) * introBoost;
     const sprite = this.assets?.carrier;
     const height = sprite ? width * (sprite.height / sprite.width) : width * 0.28;
     return { width, height };
@@ -496,14 +615,14 @@ export class AnimationController {
     const y = proj.y + oy;
     const ctx = this.ctx;
     ctx.save();
-    ctx.globalAlpha = 0.18;
-    ctx.fillStyle = '#041018';
+    ctx.globalAlpha = 0.34;
+    ctx.fillStyle = '#02080e';
     ctx.beginPath();
-    ctx.ellipse(proj.x, proj.yWater + 10 * this.dpr, width * 0.42, height * 0.08, yaw, 0, Math.PI * 2);
+    ctx.ellipse(proj.x, proj.yWater + 12 * this.dpr, width * 0.48, height * 0.1, yaw, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
     ctx.save();
-    ctx.globalAlpha = 0.72 + 0.28 * (1 - Math.min(1, proj.t));
+    ctx.globalAlpha = 0.88 + 0.12 * (1 - Math.min(1, proj.t));
     ctx.translate(proj.x, proj.y);
     ctx.rotate(yaw);
     if (sprite) {
@@ -515,6 +634,55 @@ export class AnimationController {
     const rect = { x, y, width, height, proj };
     this._shipRects[ship.id] = rect;
     if (ship.id === 'home') this._homeRect = rect;
+  }
+
+  _drawShipAccent(width, height, ox, oy) {
+    const ctx = this.ctx;
+    const deckY = oy + height * 0.3;
+    const deckX0 = ox + width * 0.16;
+    const deckX1 = ox + width * 0.82;
+    ctx.save();
+    ctx.fillStyle = 'rgba(6, 10, 16, 0.28)';
+    ctx.fillRect(ox + width * 0.08, oy + height * 0.58, width * 0.82, height * 0.28);
+    ctx.strokeStyle = 'rgba(244, 222, 172, 0.78)';
+    ctx.shadowColor = 'rgba(232, 196, 120, 0.45)';
+    ctx.shadowBlur = 10 * this.dpr;
+    ctx.lineWidth = Math.max(1.6, width * 0.012);
+    ctx.beginPath();
+    ctx.moveTo(deckX0, deckY);
+    ctx.lineTo(deckX1, deckY);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.lineWidth = Math.max(1, width * 0.006);
+    ctx.strokeRect(deckX0, deckY - height * 0.045, deckX1 - deckX0, height * 0.09);
+    ctx.restore();
+  }
+
+  _drawLandingLights(width, height, ox, oy) {
+    const ctx = this.ctx;
+    const deckY = oy + height * 0.3;
+    const left = ox + width * 0.18;
+    const right = ox + width * 0.8;
+    const top = deckY - height * 0.05;
+    const bot = deckY + height * 0.05;
+    const r = Math.max(1.6, width * 0.012);
+    const spots = [
+      [left, top],
+      [right, top],
+      [left, bot],
+      [right, bot],
+      [(left + right) / 2, top],
+      [(left + right) / 2, bot],
+    ];
+    ctx.save();
+    for (const [x, y] of spots) {
+      ctx.fillStyle = 'rgba(255, 236, 196, 0.55)';
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   _drawFallbackShip(proj, width) {
@@ -547,13 +715,14 @@ export class AnimationController {
     let x = proj.x;
     let y = proj.y;
     let yWater = proj.yWater;
-    let width = Math.min(w, h * 1.85) * 0.16 * proj.scale;
+    const planeLen = this._objectScale().planeWorldLength ?? 48;
+    let width = this._worldPx(planeLen, w, h);
 
-    if (home && hold > 0.001) {
+    if (home && hold > 0.001 && (idle || (this.sample?.speed ?? 0) < 16)) {
       const introCfg = this.camera.introSettings(w, h);
       const deckX = home.x + home.width * (introCfg.deckX ?? 0.38);
       const deckY = home.y + home.height * (introCfg.deckY ?? 0.5);
-      const deckW = Math.max(home.width * (introCfg.planeOnDeck ?? 0.4), Math.min(w, h) * 0.22);
+      const deckW = home.width * (introCfg.planeOnDeck ?? 0.28);
       x = lerp(x, deckX, hold);
       y = lerp(y, deckY, hold);
       width = lerp(width, deckW, hold);
@@ -566,10 +735,9 @@ export class AnimationController {
       const along = inverseLerp(deck.shipDistance, deck.shipDistance + deck.deckLength, this.sample.distance);
       const land = blend * (1 - intro);
       const deckX = target.x + target.width * lerp(0.28, 0.7, clamp(along, 0, 1));
-      const deckY = target.y + target.height * 0.36;
+      const deckY = target.y + target.height * 0.32;
       x = lerp(x, deckX, land);
       y = lerp(y, deckY, land);
-      width = lerp(width, target.width * 0.18, land);
       yWater = lerp(yWater, target.proj.yWater, land);
     }
 
@@ -686,16 +854,44 @@ export class AnimationController {
   }
 
   _spawnSplash(sample) {
-    for (let i = 0; i < 12; i += 1) {
+    const d = sample.distance;
+    const a = Math.max(1, sample.altitude);
+    for (let i = 0; i < 10; i += 1) {
       this.particles.spawn({
         kind: 'splash',
-        distance: sample.distance + (Math.random() - 0.5) * 22,
-        altitude: 2 + Math.random() * 8,
-        vx: (Math.random() - 0.5) * 36,
-        vy: 18 + Math.random() * 28,
-        ay: -70,
-        ttl: 0.8,
-        size: 3 + Math.random() * 5,
+        distance: d + (Math.random() - 0.5) * 18,
+        altitude: a + Math.random() * 6,
+        vx: (Math.random() - 0.5) * 70,
+        vy: 28 + Math.random() * 46,
+        ay: -92,
+        ttl: 0.7 + Math.random() * 0.35,
+        size: 5 + Math.random() * 8,
+      });
+    }
+    for (let i = 0; i < 16; i += 1) {
+      this.particles.spawn({
+        kind: 'splash',
+        distance: d + (Math.random() - 0.5) * 28,
+        altitude: a + Math.random() * 4,
+        vx: (Math.random() - 0.5) * 110,
+        vy: 12 + Math.random() * 34,
+        ay: -80,
+        ttl: 0.45 + Math.random() * 0.3,
+        size: 2 + Math.random() * 3.5,
+      });
+    }
+    for (let i = 0; i < 8; i += 1) {
+      const ang = (i / 8) * Math.PI * 2;
+      this.particles.spawn({
+        kind: 'foam',
+        distance: d + Math.cos(ang) * 6,
+        altitude: 1 + Math.random() * 3,
+        vx: Math.cos(ang) * (18 + Math.random() * 22),
+        vy: 4 + Math.random() * 8,
+        ay: -18,
+        ttl: 0.85 + Math.random() * 0.35,
+        size: 7 + Math.random() * 6,
+        drag: 0.94,
       });
     }
   }
@@ -745,9 +941,14 @@ export class AnimationController {
         ctx.arc(proj.x, proj.y, p.size * proj.scale * this.dpr * (1.2 - alpha * 0.4), 0, Math.PI * 2);
         ctx.fill();
       } else if (p.kind === 'splash') {
-        ctx.fillStyle = `rgba(198, 236, 255, ${0.4 * alpha})`;
+        ctx.fillStyle = `rgba(198, 236, 255, ${0.55 * alpha})`;
         ctx.beginPath();
         ctx.ellipse(proj.x, proj.y, p.size * this.dpr, p.size * 0.7 * this.dpr, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === 'foam') {
+        ctx.fillStyle = `rgba(230, 246, 255, ${0.35 * alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(proj.x, proj.yWater ?? proj.y, p.size * this.dpr * 1.4, p.size * 0.35 * this.dpr, 0, 0, Math.PI * 2);
         ctx.fill();
       } else {
         ctx.fillStyle = `rgba(214, 196, 160, ${0.28 * alpha})`;

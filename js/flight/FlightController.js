@@ -247,7 +247,7 @@ export class FlightController {
     const w = path.windows;
     const h = path.horizontalSpeed;
     const deck = path.deckAltitude;
-    const cruiseAlt = path.maxAltitude * 0.97;
+    const cruiseAlt = path.maxAltitude;
     const slope = Math.abs(Math.tan((path.landingAngle * Math.PI) / 180));
     const descentDrop = slope * path.horizontalSpeed * path.descentDuration;
     const approachAlt = clamp(cruiseAlt - descentDrop, deck + 22, cruiseAlt - 10);
@@ -344,7 +344,6 @@ export class FlightController {
     pose.speed *= this._impact.speedMul;
     pose.pitch += this._impact.pitchNudge;
     pose.y = pose.altitude;
-    this.aircraft.setPose(pose);
     return pose;
   }
 

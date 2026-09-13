@@ -1,0 +1,24 @@
+{
+  "passed": true,
+  "failureCount": 0,
+  "failures": [],
+  "gameRounds": {
+    "totalRounds": 1000,
+    "successfulRounds": 355,
+    "failedRounds": 645,
+    "actualSuccessRate": 0.355,
+    "configuredSuccessRate": 0.35
+  },
+  "generator": {
+    "totalRounds": 10000,
+    "successfulRounds": 3581,
+    "failedRounds": 6419,
+    "actualSuccessRate": 0.3581,
+    "configuredSuccessRate": 0.35
+  },
+  "timers": {
+    "raf": 0,
+    "timeouts": 0
+  },
+  "consoleErrors": []
+}

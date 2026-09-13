@@ -1,4 +1,4 @@
-import { clamp, damp, easeInQuad, easeOutCubic, easeOutQuad, lerp, smoothstep } from '../utils/easing.js';
+import { clamp, damp } from '../utils/easing.js';
 import { FlightPhase } from './FlightController.js';
 
 export const LandingStage = {
@@ -45,6 +45,7 @@ export class LandingSequence {
     this.plan = null;
     this._touchPulse = false;
     this._splashPulse = false;
+    this.impactElapsed = 0;
     this.fx = this._idleFx();
   }
 
@@ -92,12 +93,12 @@ export class LandingSequence {
       vx,
       vy,
     };
-    this.aircraft.setPose(this._toPose(LandingStage.APPROACH));
   }
 
   update(deltaTime) {
     if (!this.active || !this.state) return this._idlePose();
     const dt = clamp(deltaTime, 0, this.config.flight.path.maxDt * 4);
+    this._syncFromAircraft();
     if (this.complete) return this._toPose(this._stage());
 
     this.elapsed += dt;
@@ -110,165 +111,128 @@ export class LandingSequence {
     if (this.result === 'SUCCESS') this._updateSuccess(dt);
     else this._updateFail(dt);
 
-    if (this.elapsed > 6.5) this.complete = true;
+    if (this.result === 'SUCCESS' && this.elapsed > 10) this.complete = true;
 
-    const stage = this._stage();
-    this.fx.zone = this._zoneGlow(stage);
-    const pose = this._toPose(stage);
-    this.aircraft.setPose(pose);
-    return pose;
+    this.fx.zone = 0;
+    return this._toPose(this._stage());
+  }
+
+  resolveSurfaces() {
+    if (!this.active || this.complete || !this.state) return;
+    this._syncFromAircraft();
+    if (this.result === 'SUCCESS') {
+      if (!this.touched && this._onShip()) {
+        this.touched = true;
+        this.touchElapsed = 0;
+        this._pulseTouchdown();
+      }
+    } else if (!this.impacted && this._onWater()) {
+      this.onAircraftWaterImpact();
+    }
   }
 
   isComplete() {
     return this.complete;
   }
 
+  _syncFromAircraft() {
+    const body = this.aircraft?.body;
+    if (!body || !this.state) return;
+    this.state.distance = body.x;
+    this.state.altitude = body.y;
+    this.state.vx = Math.max(0, body.vx);
+    this.state.vy = body.vy;
+    this.state.pitch = body.rotation;
+  }
+
+  _planeProbe() {
+    return {
+      x: this.state.distance,
+      y: this.state.altitude,
+      radius: this.aircraft?.collider?.radius ?? 18,
+      enabled: true,
+      shape: 'circle',
+    };
+  }
+
+  _overDeckX() {
+    const start = this.plan?.zoneStart ?? this.ship?.deck?.start ?? 1280;
+    const end = this.plan?.zoneEnd ?? this.ship?.deck?.end ?? start + 170;
+    const x = this.state?.distance ?? 0;
+    return x >= start - 14 && x <= end + 70;
+  }
+
+  _onShip() {
+    if (!this._overDeckX()) return false;
+    const deck = this.plan?.deckAltitude ?? 26;
+    return this.state.altitude <= deck + 10;
+  }
+
+  _onWater() {
+    const water = this.plan?.waterLevel ?? 0;
+    if (this.state.altitude <= water + 2.4) return true;
+    return !!this.ship?.waterCollider?.overlaps(this._planeProbe());
+  }
+
   _updateSuccess(dt) {
-    const { spec, deckAltitude, aimDistance, zoneEnd, deckEnd } = this.plan;
+    const { spec, deckAltitude } = this.plan;
     const s = spec.success;
-    const preTouch = s.approachDuration + s.decelerateDuration + s.descendDuration + s.flareDuration + s.alignDuration;
-
     if (!this.touched) {
-      const u = clamp(this.elapsed / preTouch, 0, 1);
-      const travel = easeOutCubic(u);
-      const aim = clamp(aimDistance, this.entry.distance + 12, zoneEnd - 8);
-      this.state.distance = lerp(this.entry.distance, aim, travel);
-      this.state.vx = ((aim - this.entry.distance) * 3 * (1 - u) ** 2) / preTouch;
-
-      const descendU = smoothstep(0, 0.62, u);
-      const flareU = smoothstep(0.48, 0.86, u);
-      const alignU = smoothstep(0.78, 1, u);
-      const approachAlt = lerp(this.entry.altitude, deckAltitude + s.flareAltitude, descendU);
-      const flared = lerp(approachAlt, deckAltitude + 3.2, flareU);
-      this.state.altitude = lerp(flared, deckAltitude + 0.6, alignU);
-      this.state.vy = (this.state.altitude - (this._prevAlt ?? this.state.altitude)) / Math.max(dt, 1e-4);
-
-      const approachPitch = lerp(this.entry.pitch, s.approachPitch, smoothstep(0, 0.32, u));
-      const flarePitch = lerp(approachPitch, s.flarePitch, flareU);
-      this.state.pitch = lerp(flarePitch, s.alignPitch, alignU);
-
-      const reachedDeck = this.state.altitude <= deckAltitude + 1.15 && u > 0.72;
-      const timedOut = this.elapsed >= preTouch;
-      if (reachedDeck || timedOut) {
+      if (this._onShip()) {
         this.touched = true;
         this.touchElapsed = 0;
-        this.state.altitude = deckAltitude;
-        this.state.vy = s.bounce;
-        this.state.vx = Math.max(s.touchdownSpeed, this.state.vx * 0.55);
-        this.state.distance = clamp(this.state.distance, this.plan.zoneStart, zoneEnd);
         this._pulseTouchdown();
       }
-      this._prevAlt = this.state.altitude;
       return;
     }
 
     this.touchElapsed += dt;
-    const x = this.state.altitude - deckAltitude;
-    this.state.vy += (-s.spring * x - s.damping * this.state.vy) * dt;
-    this.state.altitude = Math.max(deckAltitude, this.state.altitude + this.state.vy * dt);
-    this.state.vx = damp(this.state.vx, 0, s.brake, dt);
-    this.state.pitch = damp(this.state.pitch, 0, 9, dt);
-    this.state.distance = Math.min(deckEnd - 10, this.state.distance + this.state.vx * dt);
-
     const settled =
       this.state.vx < 3.5 &&
-      Math.abs(this.state.altitude - deckAltitude) < 0.35 &&
-      Math.abs(this.state.vy) < 2.5 &&
-      this.touchElapsed > s.settleDuration * 0.45;
-
+      Math.abs(this.state.altitude - deckAltitude) < 2.2 &&
+      this.touchElapsed > s.settleDuration * 0.35;
     if (settled || this.touchElapsed >= s.settleDuration + s.stopDuration) {
-      this.state.vx = 0;
-      this.state.vy = 0;
-      this.state.altitude = deckAltitude;
-      this.state.pitch = 0;
       this.complete = true;
     }
   }
 
+  /**
+   * One-shot water contact during FAIL. Visual/physics only — does not roll the result.
+   */
+  onAircraftWaterImpact() {
+    if (this.result !== 'FAIL' || this.impacted || !this.active) return false;
+    this.impacted = true;
+    this.impactElapsed = 0;
+    this.falling = true;
+    this._pulseSplash();
+    return true;
+  }
+
   _updateFail(dt) {
-    const { spec, deckAltitude, waterLevel, zoneStart, zoneEnd, crashPoint } = this.plan;
-    const f = spec.fail;
-    const criticalEnd = f.criticalDuration;
-    const missEnd = criticalEnd + f.missDuration;
-    const overshootEnd = missEnd + f.overshootDuration;
-    const stallEnd = overshootEnd + f.stallDuration;
-
-    if (!this.falling) {
-      const t = this.elapsed;
-      const missAlt = deckAltitude + f.missClearance;
-      let targetDist;
-      let targetAlt;
-      let targetPitch;
-
-      if (t < criticalEnd) {
-        const u = t / criticalEnd;
-        targetDist = lerp(this.entry.distance, lerp(zoneStart, zoneEnd, 0.55), easeOutQuad(u));
-        targetAlt = lerp(this.entry.altitude, missAlt + 8, u * 0.35);
-        targetPitch = lerp(this.entry.pitch, -5, u);
-      } else if (t < missEnd) {
-        const u = (t - criticalEnd) / f.missDuration;
-        targetDist = lerp(lerp(zoneStart, zoneEnd, 0.55), zoneEnd + 18, u);
-        targetAlt = lerp(missAlt + 8, missAlt, u);
-        targetPitch = lerp(-5, -9, u);
-      } else {
-        const u = clamp((t - missEnd) / f.overshootDuration, 0, 1);
-        targetDist = lerp(zoneEnd + 18, lerp(zoneEnd + 40, crashPoint, 0.55), easeOutQuad(u));
-        targetAlt = lerp(missAlt, missAlt * 0.72, u);
-        targetPitch = lerp(-9, f.divePitch * 0.35, u);
-      }
-
-      this.state.vx = (targetDist - this.state.distance) / Math.max(dt, 1e-3);
-      this.state.vy = (targetAlt - this.state.altitude) / Math.max(dt, 1e-3);
-      this.state.distance = targetDist;
-      this.state.altitude = targetAlt;
-      this.state.pitch = damp(this.state.pitch, targetPitch, 7, dt);
-
-      if (this.elapsed >= overshootEnd) {
-        this.falling = true;
-        this.state.vx = Math.max(42, Math.min(this.state.vx, 160));
-        this.state.vy = Math.min(this.state.vy, -22);
-      }
+    const f = this.plan.spec.fail;
+    const pastDeck = this.state.distance >= (this.plan.zoneStart ?? 1280) - 14;
+    if (pastDeck || this._overDeckX() || this.state.altitude < 40 || this.state.vx < (this.config.physics?.stallSpeed ?? 72)) {
+      this.falling = true;
+    }
+    if (this.impacted) {
+      this.impactElapsed += dt;
+      if (this.impactElapsed >= (f.waterHold ?? 0.55)) this.complete = true;
       return;
     }
-
-    const stallU = clamp((this.elapsed - overshootEnd) / Math.max(f.stallDuration, 0.01), 0, 1);
-    this.state.vy -= f.gravity * dt * (0.55 + stallU * 0.7);
-    this.state.vx = damp(this.state.vx, 28, 1.1, dt);
-    this.state.distance += this.state.vx * dt;
-    this.state.altitude += this.state.vy * dt;
-    const diveU = clamp((this.elapsed - stallEnd) / Math.max(f.diveDuration, 0.01), 0, 1);
-    const pitchTarget = lerp(f.divePitch * 0.45, f.divePitch, easeInQuad(clamp(diveU, 0, 1)));
-    this.state.pitch = damp(this.state.pitch, pitchTarget, 6.5, dt);
-
-    if (this.state.altitude <= waterLevel + 1.2) {
-      this.state.altitude = waterLevel - 6;
-      this.state.vx = damp(this.state.vx, 0, 8, dt);
-      this.state.vy = 0;
-      if (!this.impacted) {
-        this.impacted = true;
-        this._pulseSplash();
-      }
-      if (this.elapsed > stallEnd + f.fallDuration * 0.35) this.complete = true;
-    }
-
-    if (this.elapsed > overshootEnd + f.stallDuration + f.diveDuration + f.fallDuration + 0.4) {
-      this.complete = true;
-    }
+    if (this._onWater() || (this.falling && this.state.altitude <= 8)) this.onAircraftWaterImpact();
   }
 
   _stage() {
     if (this.result === 'SUCCESS') {
       if (this.complete || (this.touched && this.state.vx < 4)) return LandingStage.STOP;
-      if (this.touched && this.touchElapsed < 0.14) return LandingStage.TOUCHDOWN;
+      if (this.touched && this.touchElapsed < 0.16) return LandingStage.TOUCHDOWN;
       if (this.touched) return LandingStage.SETTLE;
       const s = this.plan.spec.success;
-      const t = this.elapsed;
-      if (t < s.approachDuration) return LandingStage.APPROACH;
-      if (t < s.approachDuration + s.decelerateDuration) return LandingStage.DECELERATE;
-      if (t < s.approachDuration + s.decelerateDuration + s.descendDuration) return LandingStage.DESCEND;
-      if (t < s.approachDuration + s.decelerateDuration + s.descendDuration + s.flareDuration) {
-        return LandingStage.FLARE;
-      }
+      const above = this.state.altitude - this.plan.deckAltitude;
+      const flare = s.flareAltitude ?? 18;
+      if (above > flare + 22) return this.state.vx > (s.approachSpeed ?? 92) * 0.9 ? LandingStage.APPROACH : LandingStage.DESCEND;
+      if (above > flare + 6) return LandingStage.DESCEND;
+      if (above > 3.4) return LandingStage.FLARE;
       return LandingStage.ALIGN;
     }
 
@@ -278,10 +242,7 @@ export class LandingSequence {
       if (this.state.pitch < -18) return LandingStage.DIVE;
       return LandingStage.STALL;
     }
-    const f = this.plan.spec.fail;
-    if (this.elapsed < f.criticalDuration) return LandingStage.CRITICAL;
-    if (this.elapsed < f.criticalDuration + f.missDuration) return LandingStage.MISS;
-    return LandingStage.OVERSHOOT;
+    return LandingStage.CRITICAL;
   }
 
   _zoneGlow(stage) {
@@ -307,11 +268,7 @@ export class LandingSequence {
     this.fx.shake = 0.7;
   }
 
-  _deckBlend(stage) {
-    if (this.result !== 'SUCCESS') return 0;
-    if (stage === LandingStage.STOP || stage === LandingStage.SETTLE) return 1;
-    if (stage === LandingStage.TOUCHDOWN) return 0.75;
-    if (stage === LandingStage.ALIGN) return 0.35;
+  _deckBlend() {
     return 0;
   }
 
@@ -331,14 +288,15 @@ export class LandingSequence {
       phase,
       landingStage: stage,
       landed: this.touched && this.result === 'SUCCESS',
+      overDeck: this._overDeckX(),
       deckBlend: this._deckBlend(stage),
       effects: {
-        zone: this.fx.zone,
+        zone: 0,
         dust: this.fx.dust,
         splash: this.fx.splash,
         shake: this.fx.shake,
-        smoke: this.result === 'FAIL' && (this.falling || this.impacted) ? 1 : 0,
-        successGlow: this.result === 'SUCCESS' && this.touched ? Math.min(1, this.touchElapsed * 2) : 0,
+        smoke: this.result === 'FAIL' && (this.falling || this.impacted || this.elapsed > 0.35) ? 1 : 0,
+        successGlow: 0,
         touchdownPulse: this._touchPulse,
         splashPulse: this._splashPulse,
       },

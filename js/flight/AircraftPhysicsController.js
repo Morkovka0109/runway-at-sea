@@ -1,9 +1,10 @@
-import { clamp, damp } from '../utils/easing.js';
-import { clampImpulse, finite, sanitizeVelocity } from '../physics/Body.js';
+import { clamp, damp, lerp } from '../utils/easing.js';
+import { finite, sanitizeVelocity } from '../physics/Body.js';
 
 /**
- * Guided aircraft body. Follows the predetermined flight/landing pose
- * with forces, drag and impulses. Does not decide SUCCESS / FAIL.
+ * Single source of truth for the aircraft body.
+ * Speed and altitude hold unless a digit or bomb changes the targets.
+ * Position only advances forward from the previous state.
  */
 export class AircraftPhysicsController {
   constructor(config, aircraft) {
@@ -12,13 +13,16 @@ export class AircraftPhysicsController {
     this.body = aircraft.body;
     this.prev = { x: 0, y: 0, radius: aircraft.collider.radius };
     this.mode = 'idle';
-    this._speedRecover = 1;
     this._time = 0;
     this.reset();
   }
 
   get spec() {
     return this.config.physics ?? {};
+  }
+
+  snapshot(guide = {}) {
+    return this._poseFromBody(guide);
   }
 
   reset(pose = null) {
@@ -33,9 +37,20 @@ export class AircraftPhysicsController {
     this.body.ay = 0;
     this.body.rotation = finite(start.pitch, 0);
     this.body.omega = 0;
-    this._speedRecover = 1;
     this.mode = 'idle';
     this._time = 0;
+    this._damage = 0;
+    this._stability = 1;
+    this._crashBlend = 0;
+    this._targetVx = 0;
+    this._targetY = y;
+    this._holdVx = 0;
+    this._holdVy = 0;
+    this._airborne = false;
+    this._launched = false;
+    this._boostLeft = 0;
+    this._flightState = 'hold';
+    this._bombHits = 0;
     this._capturePrev();
     this.body.syncCollider();
     this.aircraft.collider.radius = this.spec.planeRadius ?? this.config.numberPickups?.planeRadius ?? 18;
@@ -46,30 +61,53 @@ export class AircraftPhysicsController {
     const spec = this.spec;
     const rockets = this.config.rockets ?? {};
     const damage = rocket?.damage ?? {};
-    const maxImpulse = spec.maxImpulse ?? 90;
-    const vyHit = damage.altitude ?? rockets.rocketAltitudePenalty ?? spec.rocketVy ?? 14;
-    const impulse = clampImpulse(0, -Math.abs(vyHit) * 3.2, maxImpulse);
-    this.body.vy += impulse.y / this.body.mass;
-    const spdCut = clamp(damage.speed ?? rockets.rocketSpeedPenalty ?? 0.22, 0, 0.6);
-    this.body.vx *= clamp(1 - spdCut, spec.minSpeedMul ?? rockets.minSpeedMul ?? 0.55, 1);
-    this._speedRecover = clamp(1 - spdCut, spec.minSpeedMul ?? 0.55, 1);
-    this.body.omega = clamp(this.body.omega - 18, -(spec.maxAngular ?? 80), spec.maxAngular ?? 80);
+    const dH = Math.abs(damage.altitude ?? rockets.rocketAltitudePenalty ?? spec.rocketVy ?? 8);
+    const dV = Math.abs(
+      Number.isFinite(damage.deltaSpeed)
+        ? damage.deltaSpeed
+        : (rockets.rocketSpeedDelta ?? (damage.speed ?? rockets.rocketSpeedPenalty ?? 0.12) * 80),
+    );
+    const water = this.config.flight?.world?.waterLevel ?? 0;
+    const deck = this.config.flight?.world?.deckAltitude ?? 26;
+    const minY = this.mode === 'landing' ? deck : water + 1;
+    const minVx = spec.minHoldSpeed ?? 18;
+    this._bombHits += 1;
+    this._targetVx = Math.max(minVx, Math.max(0, this.body.vx) - dV);
+    this._targetY = Math.max(minY, this.body.y - dH);
+    this.body.vx = this._targetVx;
+    this.body.vy = Math.min(this.body.vy, -Math.min(26, dH * 0.85));
+    this._holdVx = this.body.vx;
+    this.body.omega = clamp(this.body.omega - 8, -(spec.maxAngular ?? 80), spec.maxAngular ?? 80);
+    const amount = clamp(damage.damage ?? rockets.rocketDamage ?? 0.18, 0.06, 0.4);
+    this._damage = clamp(this._damage + amount, 0, spec.maxDamage ?? 1.25);
+    this._stability = clamp(1 - this._damage * 0.85, 0.12, 1);
+    this._refreshFlightState();
     this._sanitize();
   }
 
-  applyNumberHit() {
+  applyNumberHit(item) {
+    const spec = this.spec;
     const heading = this.body.rotation;
-    const vx = this.body.vx;
-    const nudge = this.spec.numberNudge ?? 4;
-    const impulse = clampImpulse(0, nudge, this.spec.maxImpulse ?? 90);
-    this.body.vy += impulse.y * 0.12;
-    this.body.vx = vx;
+    const n = clamp(Math.round(Number(item?.number) || 5), 1, 10);
+    const scale = 0.55 + n * 0.045;
+    const dH = Math.abs((spec.numberNudge ?? 10) * scale);
+    const dV = Math.abs((spec.numberSpeedBoost ?? 14) * scale);
+    const maxAlt = spec.maxAltitude ?? 360;
+    const maxSpeed = spec.maxSpeed ?? 420;
+    this._targetVx = Math.min(maxSpeed, Math.max(this._targetVx, this.body.vx) + dV);
+    this._targetY = Math.min(maxAlt, Math.max(this._targetY, this.body.y) + dH);
+    this.body.vx = Math.max(this.body.vx, this._targetVx);
+    this.body.vy = Math.max(this.body.vy, Math.min(26, dH * 0.85));
+    this._holdVx = this.body.vx;
     this.body.rotation = heading;
+    this._damage = Math.max(0, this._damage - (spec.numberRepair ?? 0.04));
+    this._stability = clamp(1 - this._damage * 0.85, 0.12, 1);
     this._sanitize();
   }
 
   /**
-   * Integrate the body toward a guidance pose. `mode`: idle | flight | landing | crash.
+   * Integrate from the previous body state toward the current targets.
+   * `mode`: idle | flight | landing | crash.
    */
   follow(guide, deltaTime, mode = 'flight') {
     const spec = this.spec;
@@ -84,17 +122,27 @@ export class AircraftPhysicsController {
       return this._poseFromBody({ phase: 'idle', t: 0 });
     }
 
-    if (dt <= 0 || mode === 'idle') {
-      this._hold(guide, dt);
+    if (mode === 'idle') {
+      this._holdIdle(guide, dt);
+      return this._emit(guide);
+    }
+    if (dt <= 0) {
       return this._emit(guide);
     }
 
-    this._recover(dt);
+    if (this._targetVx <= 0 && this.body.vx > 0) this._targetVx = this.body.vx;
+    if (mode === 'flight' && this._isLaunch(guide)) {
+      this._launchOnce();
+    }
+    if (mode === 'landing') this._armLandingTargets(guide);
+    if (mode === 'crash') this._armCrashTargets(guide);
+    this._refreshFlightState();
+
     const stepLimit = 1 / 48;
     const steps = Math.max(1, Math.min(6, Math.ceil(dt / stepLimit)));
     const stepDt = dt / steps;
     for (let i = 0; i < steps; i += 1) {
-      this._steer(guide, stepDt, mode);
+      this._steerTargets(stepDt, mode);
       this._integrate(stepDt, mode);
     }
     this._constrain(guide, dt, mode);
@@ -109,7 +157,23 @@ export class AircraftPhysicsController {
     return zoneCollider.hitsSwept(from, this.body.collider);
   }
 
-  _hold(guide, dt) {
+  hitsWater(ship) {
+    const waterLevel = this.config.flight?.world?.waterLevel ?? 0;
+    if (this.body.y <= waterLevel + 2.4) return true;
+    const water = ship?.waterCollider;
+    return !!(water && this.overlapsZone(water));
+  }
+
+  hitsShip(ship) {
+    if (!ship) return false;
+    const deck = ship.deck?.altitude ?? this.config.flight.world.deckAltitude ?? 26;
+    if (this.body.y > deck + 8) return false;
+    const zone = ship.zoneCollider;
+    const hull = ship.collider;
+    return this.overlapsZone(zone) || this.overlapsZone(hull);
+  }
+
+  _holdIdle(guide, dt) {
     const x = finite(guide.distance ?? guide.x, this.body.x);
     const y = finite(guide.altitude ?? guide.y, this.body.y);
     if (dt <= 0) {
@@ -125,116 +189,228 @@ export class AircraftPhysicsController {
       this.body.vy = damp(this.body.vy, 0, 12, dt);
       this.body.rotation = damp(this.body.rotation, finite(guide.pitch, 0), 12, dt);
     }
+    this._targetVx = 0;
+    this._targetY = this.body.y;
     this.body.syncCollider();
   }
 
-  _steer(guide, dt, mode) {
+  _isLaunch(guide) {
+    if (this._airborne || this._launched) return false;
+    const phase = guide?.phase;
+    if (phase === 'TAKEOFF') return true;
+    const speed = Math.hypot(this.body.vx, this.body.vy);
+    return speed < (this.spec.holdSpeed ?? 180) * 0.28 && this._time < 0.9;
+  }
+
+  _launchOnce() {
     const spec = this.spec;
-    const targetX = finite(guide.distance ?? guide.x, this.body.x);
-    const targetY = finite(guide.altitude ?? guide.y, this.body.y);
-    const err = Math.hypot(targetX - this.body.x, targetY - this.body.y);
-    let steer =
-      mode === 'landing' ? spec.landingSteer ?? 16 : mode === 'crash' ? spec.crashSteer ?? 3.2 : spec.steer ?? 9;
-    if (mode === 'crash' && err > 70) steer = spec.crashCatchup ?? 11;
-    const gravity =
-      mode === 'crash' ? spec.crashGravity ?? 220 : mode === 'landing' ? spec.landingGravity ?? 8 : spec.gravity ?? 38;
-    const lift = spec.lift ?? 2.4;
     const maxGuide = spec.maxSpeed ?? 420;
-    const guideVx = clamp(Number.isFinite(guide.vx) ? guide.vx : 0, -maxGuide, maxGuide);
-    const guideVy = clamp(Number.isFinite(guide.vy) ? guide.vy : 0, -maxGuide, maxGuide);
-    const desiredVx = ((targetX - this.body.x) * steer + guideVx) * this._speedRecover;
-    const desiredVy = (targetY - this.body.y) * steer + guideVy;
-    this.body.ax = (desiredVx - this.body.vx) * lift;
-    this.body.ay = (desiredVy - this.body.vy) * lift - gravity;
+    const launchVx = clamp(spec.launchVx ?? spec.holdSpeed ?? 96, 48, maxGuide);
+    const launchVy = clamp(spec.launchVy ?? 70, 24, 320);
+    const launchPitch = spec.launchPitch ?? 0;
+    this._launched = true;
+    this._airborne = true;
+    this._boostLeft = spec.launchBoost ?? 0.1;
+    this.body.vx = Math.max(this.body.vx, launchVx);
+    this.body.vy = Math.max(this.body.vy, launchVy);
+    this.body.rotation = launchPitch;
+    this.body.omega = 0;
+    this._targetVx = this.body.vx;
+    const worldStart = this.config.flight?.world?.startAltitude ?? this.body.y;
+    this._targetY = spec.launchHoldAltitude ?? (worldStart + 70);
+    this._holdVx = this.body.vx;
+    this._holdVy = launchVy;
+    this.body.ax = 0;
+    this.body.ay = 0;
+    this._flightState = 'hold';
+  }
 
-    if (mode === 'crash') {
-      this.body.ay -= gravity * 0.35;
-      this.body.omega += Math.sin(this._time * 9.5) * 28 * dt;
+  _isOverDeck(guide = {}) {
+    if (guide.overDeck === true) return true;
+    const world = this.config.flight.world ?? {};
+    const zone = this.config.roundResult?.landingZone;
+    const start = zone?.start ?? world.shipDistance ?? 1280;
+    const end = zone?.end ?? start + (world.deckLength ?? 170);
+    return this.body.x >= start - 14 && this.body.x <= end + 70;
+  }
+
+  _armLandingTargets(guide) {
+    const deck = this.config.flight.world?.deckAltitude ?? 26;
+    if (guide?.landed || guide?.landingStage === 'STOP' || guide?.landingStage === 'SETTLE') {
+      this._targetY = deck;
+      this._targetVx = 0;
+      this._flightState = 'descent';
+      return;
+    }
+    if (!(this._targetVx > 0)) {
+      this._targetVx = Math.max(this.spec.minHoldSpeed ?? 18, this.body.vx);
+    }
+    const world = this.config.flight.world ?? {};
+    const zone = this.config.roundResult?.landingZone;
+    const start = zone?.start ?? world.shipDistance ?? 1280;
+    const approaching = this.body.x >= start - 180;
+    if (approaching || this._isOverDeck(guide)) {
+      this._targetY = deck;
+      this._flightState = 'descent';
+      const brake = this._isOverDeck(guide) ? 42 : 88;
+      this._targetVx = Math.min(Math.max(this.body.vx, this.spec.minHoldSpeed ?? 18), brake);
+    }
+  }
+
+  _armCrashTargets(guide = {}) {
+    const water = this.config.flight?.world?.waterLevel ?? 0;
+    const world = this.config.flight.world ?? {};
+    const zone = this.config.roundResult?.landingZone;
+    const start = zone?.start ?? world.shipDistance ?? 1280;
+    const reachedDeck = this.body.x >= start - 14;
+    const stall = this._stallAmount();
+    if (reachedDeck || this._isOverDeck(guide) || this._flightState === 'falling' || stall > 0.36) {
+      this._targetY = water + 1;
+      this._flightState = 'falling';
+      return;
+    }
+    if (this._flightState === 'hold') this._flightState = 'descent';
+  }
+
+  _refreshFlightState() {
+    const stall = this._stallAmount();
+    this._crashBlend = stall;
+    if (this.mode === 'idle') {
+      this._flightState = 'hold';
+      return;
+    }
+    if (this.mode === 'landing') {
+      if (this._flightState === 'falling') this._flightState = 'descent';
+      return;
+    }
+    if (this._flightState === 'hold' && stall > 0.28) {
+      this._flightState = 'descent';
+    } else if (this._flightState === 'descent' && stall > 0.62) {
+      this._flightState = 'falling';
+    }
+  }
+
+  _stallAmount() {
+    const spec = this.spec;
+    const rockets = this.config.rockets ?? {};
+    const speed = Math.max(0, this.body.vx);
+    const stallSpeed = spec.stallSpeed ?? 72;
+    const stallAlt = spec.stallAltitude ?? 22;
+    const water = this.config.flight?.world?.waterLevel ?? 0;
+    const speedStall = speed < stallSpeed ? (stallSpeed - speed) / stallSpeed : 0;
+    const altStall = this._targetY < stallAlt || this.body.y < stallAlt
+      ? (stallAlt - Math.max(water, Math.min(this.body.y, this._targetY))) / stallAlt
+      : 0;
+    const critical = spec.criticalDamage ?? rockets.criticalDamage ?? 0.75;
+    const dmgStall = this._damage >= critical ? clamp((this._damage - critical * 0.7) / 0.6, 0, 1) : 0;
+    const bombStall = this._bombHits >= 4 ? clamp((this._bombHits - 3) / 5, 0, 1) : 0;
+    return clamp(Math.max(speedStall, altStall, dmgStall, bombStall), 0, 1);
+  }
+
+  _steerTargets(dt, mode) {
+    const spec = this.spec;
+    const lock = spec.holdLock ?? 7.5;
+    const holdVx = Math.max(0, Number.isFinite(this._targetVx) ? this._targetVx : this.body.vx);
+    this.body.ax = (holdVx - this.body.vx) * lock;
+
+    if (this._boostLeft > 0 && mode === 'flight') {
+      this._boostLeft = Math.max(0, this._boostLeft - dt);
+      this.body.ay = 0;
+      this._targetY = Math.max(this._targetY, this.body.y);
+      this.body.omega += (0 - this.body.rotation) * (spec.angularDamp ?? 10) * 3 * dt;
+      this.body.rotation = clamp(this.body.rotation, -1, spec.holdPitchMax ?? 0);
+      return;
     }
 
+    const err = this._targetY - this.body.y;
+    let desiredVy;
+    if (this._flightState === 'falling') {
+      desiredVy = Math.min(this.body.vy, -10) - (spec.crashGravity ?? 140) * dt;
+    } else if (this._flightState === 'descent') {
+      const sink = clamp(-err * 0.32, 10, mode === 'landing' ? 38 : 28);
+      desiredVy = err >= 0 ? clamp(err * 1.6, 0, 10) : -sink;
+    } else {
+      desiredVy = clamp(err * 3.2, -26, 28);
+    }
+    this.body.ay = (desiredVy - this.body.vy) * lock;
+
+    const divePitch = spec.divePitch ?? this.config.flight?.landing?.fail?.divePitch ?? -38;
+    const stall = this._crashBlend;
+    let pitchTarget = 0;
+    if (this._flightState === 'falling' || (mode === 'crash' && stall > 0.2)) {
+      pitchTarget = lerp(0, divePitch, clamp(stall, 0, 1));
+    } else if (mode === 'landing' || this._flightState === 'descent' || this._flightState === 'hold') {
+      pitchTarget = 0;
+    }
+    this.body.omega += (pitchTarget - this.body.rotation) * (spec.angularDamp ?? 10) * 0.7 * dt;
+    if (mode === 'crash' && this._flightState === 'falling') {
+      this.body.omega -= 8 * dt;
+    }
     if (mode === 'landing') {
-      const deck = this.config.flight.world?.deckAltitude ?? 26;
-      if (this.body.y < deck + 42) {
-        this.body.ay -= this.body.vy * (spec.landingVyDamp ?? 14);
-        this.body.omega += (0 - this.body.rotation) * 16 * dt;
-      }
-      if (guide.landed || guide.landingStage === 'STOP' || guide.landingStage === 'SETTLE') {
-        this.body.ax -= this.body.vx * (spec.landingBrake ?? 10);
-        this.body.ay -= this.body.vy * (spec.landingBrake ?? 10);
-        this.body.omega += (0 - this.body.rotation) * 22 * dt;
-      }
+      this.body.omega += (0 - this.body.rotation) * 16 * dt;
+      this.body.rotation *= Math.exp(-10 * dt);
     }
-
-    const pitchTarget = finite(guide.pitch, this.body.rotation);
-    this.body.omega += (pitchTarget - this.body.rotation) * (spec.angularDamp ?? 10) * dt;
   }
 
   _integrate(dt, mode = 'flight') {
     const spec = this.spec;
-    const drag = spec.drag ?? 1.8;
     this.body.vx += this.body.ax * dt;
     this.body.vy += this.body.ay * dt;
-    const dampV = Math.exp(-drag * dt);
-    this.body.vx *= dampV;
-    this.body.vy *= dampV;
+    this.body.vx = Math.max(0, this.body.vx);
     this.body.rotation += this.body.omega * dt;
     this.body.omega *= Math.exp(-(spec.angularDamp ?? 10) * 0.45 * dt);
 
     const nextX = this.body.x + this.body.vx * dt;
     const nextY = this.body.y + this.body.vy * dt;
-    const slack = mode === 'crash' ? 2.6 : mode === 'landing' ? 1.8 : 1.35;
+    const slack = mode === 'crash' ? 1.45 : mode === 'landing' ? 1.8 : 1.35;
     const maxStep = (spec.maxSpeed ?? 420) * dt * slack;
-    const dx = nextX - this.body.x;
+    const dx = Math.max(0, nextX - this.body.x);
     const dy = nextY - this.body.y;
     const step = Math.hypot(dx, dy);
     if (step > maxStep && step > 0) {
       this.body.x += (dx / step) * maxStep;
       this.body.y += (dy / step) * maxStep;
     } else {
-      this.body.x = nextX;
+      this.body.x = this.body.x + dx;
       this.body.y = nextY;
     }
-  }
-
-  _recover(dt) {
-    const duration = Math.max(0.2, this.config.rockets?.rocketEffectDuration ?? this.spec.rocketEffectDuration ?? 0.9);
-    this._speedRecover = damp(this._speedRecover, 1, 2.2 / duration, dt);
+    this.body.x = Math.max(this.prev.x, this.body.x);
   }
 
   _constrain(guide = {}, _dt = 0, mode = this.mode) {
     const spec = this.spec;
     const world = this.config.flight.world;
-    const track = this.config.scene?.track ?? {};
-    const minAlt = spec.minAltitude ?? 8;
-    const maxAlt = spec.maxAltitude ?? 360;
     const minDist = spec.minDistance ?? 0;
-    const maxDist = spec.maxDistance ?? (track.length ?? 2100) + 280;
+    const maxDist = spec.maxDistance ?? 100000;
+    const maxAlt = spec.maxAltitude ?? 360;
     const water = world.waterLevel ?? 0;
-    const floor = mode === 'crash' ? water - 12 : Math.max(water, minAlt);
-    this.body.y = clamp(this.body.y, floor, maxAlt);
-    this.body.x = clamp(this.body.x, minDist, maxDist);
+    this.body.x = clamp(Math.max(this.prev.x, this.body.x), minDist, maxDist);
+    this.body.vx = Math.max(0, this.body.vx);
     if (mode === 'landing' && (guide.landed || guide.landingStage === 'STOP')) {
-      this.body.y = Math.max(world.deckAltitude ?? 26, this.body.y);
-      this.body.vx = Math.max(0, this.body.vx);
+      this.body.y = clamp(this.body.y, world.deckAltitude ?? 26, maxAlt);
       if (guide.landingStage === 'STOP') {
         this.body.vx = 0;
         this.body.vy = 0;
         this.body.omega = 0;
         this.body.rotation = 0;
+        this._targetVx = 0;
       }
-    } else if (mode !== 'crash') {
-      this.body.vx = Math.max(0, this.body.vx);
+    } else if (mode === 'crash' || this._flightState === 'falling') {
+      this.body.y = clamp(this.body.y, water - 12, maxAlt);
+    } else {
+      this.body.y = clamp(this.body.y, water + 0.4, maxAlt);
     }
     const maxAng = spec.maxAngular ?? 80;
     this.body.omega = clamp(this.body.omega, -maxAng, maxAng);
-    const pitchMin = mode === 'crash' ? -52 : -48;
-    this.body.rotation = clamp(this.body.rotation, pitchMin, 22);
+    const pitchMin = mode === 'crash' ? -52 : (mode === 'landing' ? -1 : -2);
+    const pitchMax = mode === 'crash' ? 16 : (spec.holdPitchMax ?? 0);
+    this.body.rotation = clamp(this.body.rotation, pitchMin, pitchMax);
   }
 
   _sanitize() {
     const spec = this.spec;
     const cleaned = sanitizeVelocity(this.body.vx, this.body.vy, spec.maxSpeed ?? 420);
-    this.body.vx = cleaned.vx;
+    this.body.vx = Math.max(0, cleaned.vx);
     this.body.vy = cleaned.vy;
     this.body.x = finite(this.body.x);
     this.body.y = finite(this.body.y, spec.minAltitude ?? 8);
@@ -242,6 +418,8 @@ export class AircraftPhysicsController {
     this.body.ay = finite(this.body.ay);
     this.body.rotation = finite(this.body.rotation);
     this.body.omega = finite(this.body.omega);
+    this._targetVx = Math.max(0, finite(this._targetVx, this.body.vx));
+    this._targetY = finite(this._targetY, this.body.y);
     if (cleaned.speed < 0) {
       this.body.vx = 0;
       this.body.vy = 0;
@@ -275,6 +453,7 @@ export class AircraftPhysicsController {
       x: this.body.x,
       y: this.body.y,
       fromPhysics: true,
+      flightState: this._flightState,
     };
   }
 }

@@ -6,9 +6,9 @@ import {
   isPreRoundState,
 } from './GameState.js';
 import { StateMachine } from './StateMachine.js';
-import { MultiplierNumberField } from '../flight/MultiplierNumberField.js';
-import { RocketField } from '../flight/RocketField.js';
-import { AircraftPhysicsController } from '../flight/AircraftPhysicsController.js';
+import { MultiplierNumberField } from '../flight/MultiplierNumberField.js?v=high-hits6';
+import { RocketField } from '../flight/RocketField.js?v=high-hits6';
+import { AircraftPhysicsController } from '../flight/AircraftPhysicsController.js?v=high-hits6';
 
 export { GameState };
 
@@ -277,15 +277,15 @@ export class GameManager {
         const dt = rawDt * this.settings.playbackSpeed;
         last = now;
         const guide = this.flightController.update(dt);
-        const pose = this.physics.follow(guide, dt, 'flight');
         this._advanceFlightPhase(guide.phase);
-        this._collectWorldHits(pose, dt);
+        this._collectWorldHits(this.physics.snapshot(guide), dt);
+        const pose = this.physics.follow(guide, dt, 'flight');
         const multiplier = this.multiplierSystem.sample(pose, dt);
         this.animationController.show(pose);
         this.audioManager.setEngineFromSpeed(pose.speed);
         this._cueMotionAudio(pose);
         this.bus.emit('flight:tick', { ...pose, multiplier: multiplier.value, multiplierInfo: multiplier });
-        if (this.flightController.isComplete()) {
+        if (this.flightController.isComplete() || this.physics.hitsWater(this.flightController.ship)) {
           resolve();
           return;
         }
@@ -302,10 +302,11 @@ export class GameManager {
         const rawDt = Math.min((now - last) / 1000, this.config.flight.path.maxDt);
         const dt = rawDt * this.settings.playbackSpeed;
         last = now;
+        this._collectWorldHits(this.physics.snapshot(), dt);
         const guide = this.landingSequence.update(dt);
-        const mode = guide.phase === 'CRASH' ? 'crash' : 'landing';
+        const mode = this.state === GameState.CRASH || guide.phase === 'CRASH' ? 'crash' : 'landing';
         const pose = this.physics.follow(guide, dt, mode);
-        this._collectWorldHits(pose, dt);
+        this.landingSequence.resolveSurfaces();
         const multiplier = this.multiplierSystem.sample(pose, dt);
         this.animationController.show(pose);
         this.audioManager.setEngineFromSpeed(pose.speed);
@@ -334,20 +335,34 @@ export class GameManager {
     if (zone) {
       pose.zoneContact = this.physics.overlapsZone(zone, prev);
     }
+    const zoneStart = this.config.roundResult?.landingZone?.start ?? this.config.flight?.world?.shipDistance ?? 1280;
+    const overDeck = this.physics.body.x >= zoneStart - 14;
+    const allowFlightHits = this.state !== GameState.RESULT && !overDeck;
     for (const item of numberHits) {
       const applied = this.multiplierSystem.onMultiplierNumberHit(item.number, { id: item.id });
       if (!applied) continue;
-      if (!this.flightController.isComplete()) this.physics.applyNumberHit(item);
+      if (allowFlightHits) this.physics.applyNumberHit(item);
       this.animationController.onNumberHit?.(item, applied);
       this.bus.emit('multiplier:hit', { ...applied, id: item.id });
     }
     for (const rocket of rocketHits) {
       const applied = this.multiplierSystem.onRocketHit(rocket);
-      if (!this.flightController.isComplete()) {
+      if (allowFlightHits) {
         this.physics.applyRocketHit(rocket);
       }
       this.animationController.onRocketHit?.(rocket, applied);
       this.bus.emit('rocket:hit', { rocket, ...(applied ?? {}) });
+    }
+    if (this.state === GameState.CRASH) {
+      const water = this.flightController.ship?.waterCollider;
+      if (this.physics.hitsWater(this.flightController.ship) || (water && this.physics.overlapsZone(water, prev))) {
+        if (this.landingSequence.onAircraftWaterImpact()) {
+          this.bus.emit('aircraft:waterImpact', {
+            distance: pose.distance,
+            altitude: pose.altitude,
+          });
+        }
+      }
     }
   }
 

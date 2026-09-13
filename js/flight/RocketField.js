@@ -1,4 +1,3 @@
-import { catmullRom, clamp } from '../utils/easing.js';
 import { sweptCircleHit } from '../physics/Collider.js';
 import { RocketObstacle } from './RocketObstacle.js';
 
@@ -17,112 +16,135 @@ function range(rng, min, max) {
   return min + rng() * (max - min);
 }
 
-function pathPoint(keys, u) {
-  const t = clamp(u, 0, 1);
-  if (!keys?.length) return { distance: 0, altitude: 0 };
-  if (t <= keys[0].u) return { distance: keys[0].distance, altitude: keys[0].altitude };
-  const last = keys[keys.length - 1];
-  if (t >= last.u) return { distance: last.distance, altitude: last.altitude };
-
-  let i = 0;
-  while (i < keys.length - 2 && keys[i + 1].u < t) i += 1;
-  const a = keys[i];
-  const b = keys[i + 1];
-  const p0 = keys[Math.max(0, i - 1)];
-  const p3 = keys[Math.min(keys.length - 1, i + 2)];
-  const local = (t - a.u) / (b.u - a.u || 1);
-  return {
-    distance: catmullRom(p0.distance, a.distance, b.distance, p3.distance, local),
-    altitude: catmullRom(p0.altitude, a.altitude, b.altitude, p3.altitude, local),
-  };
-}
-
-function irregularUs(count, u0, u1, rng) {
-  const span = u1 - u0;
-  const slots = [];
-  let u = u0 + rng() * (span * 0.04);
-  const avg = span / Math.max(1, count);
-  for (let i = 0; i < count; i += 1) {
-    slots.push(clamp(u + range(rng, -avg * 0.38, avg * 0.38), u0, u1));
-    u += range(rng, avg * 0.62, avg * 1.4);
-  }
-  slots.sort((a, b) => a - b);
-  for (let i = 1; i < slots.length; i += 1) {
-    if (slots[i] - slots[i - 1] < avg * 0.34) {
-      slots[i] = Math.min(u1, slots[i - 1] + avg * 0.38);
-    }
-  }
-  return slots;
-}
-
 /**
  * Spawns and collides rocket obstacles for one round.
+ * Initial fill covers the flight path; ensureAhead streams more ahead of the plane.
  */
 export class RocketField {
   constructor(config) {
     this.config = config;
     this.items = [];
     this.roundId = null;
+    this._resetStream();
+  }
+
+  _resetStream() {
+    this._rng = null;
+    this._keys = [];
+    this._next = 0;
+    this._seq = 0;
+    this._wave = 96;
   }
 
   clear() {
     this.items = [];
     this.roundId = null;
+    this._resetStream();
   }
 
   spawn(roundId, flightPlan) {
     const spec = this.config.rockets ?? {};
     const minCount = spec.minCount ?? 20;
     const extra = spec.extraCount ?? 5;
-    const radius = spec.radius ?? 16;
     const seed = ((spec.seed ?? 113) + (Number(roundId) || 0) * 7919) >>> 0;
     const rng = mulberry32(seed);
-    const count = minCount + Math.floor(rng() * (extra + 1));
     const keys = flightPlan?.keys ?? [];
+    const last = keys[keys.length - 1];
+    const pathEnd = Math.max((last?.distance ?? 1280) * 0.96, 720);
+    const guaranteed = minCount + Math.floor(rng() * (extra + 1));
+
+    this.roundId = roundId;
+    this.items = [];
+    this._rng = rng;
+    this._keys = keys;
+    this._seq = 0;
+    this._next = (spec.startDistance ?? 100) + range(rng, 6, 40);
+    this._wave = (this.config.flight?.world?.startAltitude ?? 26) + 70;
+    const floor = spec.waveMin ?? 36;
+    const ceil = spec.waveMax ?? 190;
+    const step = spec.waveStep ?? 40;
+    while (this._seq < guaranteed || this._next < pathEnd) {
+      this._wave = Math.max(floor, Math.min(ceil, this._wave + range(rng, -step, step)));
+      if (!this._placeOne(this._next, this._wave)) break;
+      this._next += range(rng, spec.gapMin ?? 54, spec.gapMax ?? 140);
+    }
+  }
+
+  ensureAhead(distance, altitude) {
+    if (!this._rng) return;
+    const spec = this.config.rockets ?? {};
+    const spawnAhead = spec.spawnAhead ?? 480;
+    const despawnBehind = spec.despawnBehind ?? 260;
+    const maxLive = spec.maxLive ?? 48;
+    const horizon = distance + spawnAhead;
+
+    this.items = this.items.filter((item) => {
+      if (item.gone) return false;
+      if (item.hit) return item.homeDistance > distance - 90;
+      return item.homeDistance > distance - despawnBehind;
+    });
+
+    const floor = spec.waveMin ?? 36;
+    const ceil = spec.waveMax ?? 190;
+    const step = spec.waveStep ?? 40;
+    let guard = 0;
+    while (this._next < horizon && this.items.length < maxLive && guard < 16) {
+      const around = Number.isFinite(altitude) ? altitude : this._wave;
+      this._wave = Math.max(floor, Math.min(ceil, around + range(this._rng, -step, step)));
+      if (!this._placeOne(this._next, this._wave)) break;
+      this._next += range(this._rng, spec.gapMin ?? 54, spec.gapMax ?? 140);
+      guard += 1;
+    }
+  }
+
+  _placeOne(distance, pathAltitude) {
+    const spec = this.config.rockets ?? {};
+    const rng = this._rng;
+    const maxLive = spec.maxLive ?? 48;
+    if (!rng || this.items.length >= maxLive) return false;
+
+    const radius = spec.radius ?? 12;
     const bands = spec.altitudeBands ?? [-56, -28, 8, 36, 64];
-    const minSep = spec.minSeparation ?? 56;
+    const minSep = spec.minSeparation ?? 70;
     const distJitter = spec.distanceJitter ?? 16;
     const altJitter = spec.altitudeJitter ?? 12;
 
-    const slots = irregularUs(count, spec.uStart ?? 0.11, spec.uEnd ?? 0.84, rng);
-    this.roundId = roundId;
-    this.items = [];
-
-    for (let i = 0; i < count; i += 1) {
-      const point = pathPoint(keys, slots[i]);
-      let distance = point.distance + range(rng, -distJitter, distJitter);
-      let altitude = point.altitude + bands[i % bands.length] + range(rng, -altJitter, altJitter);
-      for (const prev of this.items) {
-        const dx = distance - prev.homeDistance;
-        const dy = altitude - prev.homeAltitude;
-        if (dx * dx + dy * dy < minSep * minSep) {
-          distance += minSep;
-          altitude += (i % 2 === 0 ? 10 : -10);
-        }
+    let x = distance + range(rng, -distJitter, distJitter);
+    let altitude = pathAltitude + bands[Math.floor(rng() * bands.length)] + range(rng, -altJitter, altJitter);
+    for (const prev of this.items) {
+      const dx = x - prev.homeDistance;
+      const dy = altitude - prev.homeAltitude;
+      if (dx * dx + dy * dy < minSep * minSep) {
+        x += minSep * range(rng, 0.7, 1.2);
+        altitude += this._seq % 2 === 0 ? 10 : -10;
       }
+    }
 
-      const vary = range(rng, 0.86, 1.16);
-      this.items.push(
-        new RocketObstacle({
-          id: `rk-${roundId}-${i}`,
-          distance,
-          altitude: Math.max(12, altitude),
-          angle: range(rng, spec.angleMin ?? -32, spec.angleMax ?? 36),
-          radius,
-          scale: range(rng, 0.84, 1.16),
-          bob: range(rng, spec.bobMin ?? 3, spec.bobMax ?? 9),
-          drift: range(rng, spec.driftMin ?? 2, spec.driftMax ?? 8),
-          bobSpeed: range(rng, 0.7, 1.7),
-          phase: range(rng, 0, Math.PI * 2),
+    const vary = range(rng, 0.86, 1.16);
+    this._seq += 1;
+    this.items.push(
+      new RocketObstacle({
+        id: `rk-${this.roundId}-${this._seq}`,
+        distance: x,
+        altitude: Math.max(12, altitude),
+        angle: range(rng, spec.angleMin ?? -32, spec.angleMax ?? 36),
+        radius,
+        scale: range(rng, 0.82, 0.96),
+        bob: range(rng, spec.bobMin ?? 3, spec.bobMax ?? 9),
+        drift: range(rng, spec.driftMin ?? 2, spec.driftMax ?? 8),
+        bobSpeed: range(rng, 0.7, 1.7),
+        phase: range(rng, 0, Math.PI * 2),
           damage: {
             multiplier: (spec.rocketMultiplierPenalty ?? 0.18) * vary,
-            altitude: (spec.rocketAltitudePenalty ?? 14) * vary,
-            speed: spec.rocketSpeedPenalty ?? 0.22,
+            altitude: (spec.rocketAltitudePenalty ?? 8) * vary,
+            speed: spec.rocketSpeedPenalty ?? 0.12,
+            deltaSpeed: (spec.rocketSpeedDelta ?? 18) * vary,
+            damage: (spec.rocketDamage ?? 0.2) * vary,
             duration: spec.rocketEffectDuration ?? 0.9,
           },
-        }),
-      );
-    }
+      }),
+    );
+    return true;
   }
 
   update(dt) {

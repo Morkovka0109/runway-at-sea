@@ -16,7 +16,8 @@ import { MultiplierSystem } from '../js/flight/MultiplierSystem.js';
 import { MultiplierNumberField } from '../js/flight/MultiplierNumberField.js';
 import { RocketField } from '../js/flight/RocketField.js';
 import { LandingSequence } from '../js/flight/LandingSequence.js';
-import { AircraftPhysicsController } from '../js/flight/AircraftPhysicsController.js';
+import { AircraftPhysicsController } from '../js/flight/AircraftPhysicsController.js?v=high-hits6';
+import { GameScene } from '../js/scene/GameScene.js';
 import { clampImpulse, sanitizeVelocity } from '../js/physics/Body.js';
 import { Wallet } from '../js/economy/Wallet.js';
 import { BetManager } from '../js/economy/BetManager.js';
@@ -304,7 +305,7 @@ function assertRound(sample, index) {
     ok(tick.speed >= 0, `${tag} speed not negative`, tick.speed);
     ok(tick.speed !== Infinity, `${tag} speed not infinite`);
     ok(tick.speed <= 500, `${tag} speed clamped`, tick.speed);
-    ok(tick.distance >= -1 && tick.distance <= 2500, `${tag} plane in world X`, tick.distance);
+    ok(tick.distance >= -1 && tick.distance <= 20000, `${tag} plane in world X`, tick.distance);
     ok(tick.altitude >= -20 && tick.altitude <= 400, `${tag} plane in world Y`, tick.altitude);
     if (tick.vx != null) ok(finite(tick.vx) && tick.vx !== Infinity, `${tag} vx finite`);
     if (tick.vy != null) ok(finite(tick.vy) && tick.vy !== Infinity, `${tag} vy finite`);
@@ -570,7 +571,7 @@ function testPhysicsController(config) {
   const heading = physics.body.rotation;
   const vxBefore = physics.body.vx;
   physics.applyNumberHit();
-  ok(physics.body.vx === vxBefore, 'number hit does not yank heading speed');
+  ok(physics.body.vx > vxBefore, 'number hit adds forward speed');
   ok(physics.body.rotation === heading, 'number hit does not spin the plane');
 
   physics.applyRocketHit({ damage: { altitude: 14, speed: 0.22 } });
@@ -582,14 +583,32 @@ function testPhysicsController(config) {
     ok(Number.isFinite(physics.body.vx) && Number.isFinite(physics.body.vy), 'physics stays finite after rocket');
     ok(physics.body.x >= 0 && physics.body.x <= 2400, 'plane stays in world');
   }
-  ok(physics._speedRecover > 0.85, 'speed recover after rocket', physics._speedRecover);
-  ok(physics.body.vx + 8 >= cut, 'speed recovers toward the guide');
+  ok(Math.abs(physics.body.vx - cut) < 28, 'speed holds after rocket', `${cut} → ${physics.body.vx}`);
+  ok(physics.body.vx <= cut + 6, 'speed does not spontaneously recover toward the guide');
 
   physics.body.vx = Number.NaN;
   physics.body.vy = Number.POSITIVE_INFINITY;
   physics.follow({ distance: 200, altitude: 80, pitch: 0 }, 1 / 60, 'flight');
   ok(Number.isFinite(physics.body.vx) && Number.isFinite(physics.body.vy), 'NaN velocity is repaired');
   ok(physics.body.vx >= 0, 'horizontal speed is not negative in flight');
+}
+
+function testShipSpacing(config) {
+  const scene = new GameScene(config);
+  scene.ensureAhead(0, 3600);
+  const ships = scene.layout.slice().sort((a, b) => a.distance - b.distance);
+  const shipLen = config.scene.objectScale?.shipWorldLength ?? 176;
+  const minGap = Math.max(config.scene.track?.minGap ?? 0, shipLen * 2.25 + 48);
+  ok(ships.length >= 3, 'sea has home, target, and ambient ships', ships.length);
+  const gaps = [];
+  for (let i = 1; i < ships.length; i += 1) {
+    const gap = ships[i].distance - ships[i - 1].distance;
+    gaps.push(gap);
+    ok(gap + 1e-6 >= minGap, 'ships stay apart', `${ships[i - 1].id}→${ships[i].id} ${gap.toFixed(1)}`);
+    ok(gap > shipLen, 'ships do not overlap hulls', gap);
+  }
+  const rounded = new Set(gaps.map((gap) => Math.round(gap / 20)));
+  ok(rounded.size >= 2, 'ship gaps are irregular', [...rounded].join(','));
 }
 
 function testStateMachine() {
@@ -645,6 +664,7 @@ async function main() {
   testNumberPickups(gameConfig);
   testRockets(gameConfig);
   testPhysicsController(gameConfig);
+  testShipSpacing(gameConfig);
 
   const { game } = createGame();
   game.setBet(20);
